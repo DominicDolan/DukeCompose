@@ -1,5 +1,7 @@
 package com.dubulduke.layout
 
+import com.dubulduke.reactivity.Graph
+
 /**
  * Phase 3: hand laid-out elements to something that draws.
  *
@@ -70,6 +72,16 @@ class NodeView<S> internal constructor(
 
     /** The element being drawn. Its geometry is [x] / [y] / [width] / [height], not its slots. */
     val element: Element get() = checkNotNull(current) { "no element is being drawn" }
+
+    /**
+     * The graph, for the reference payloads a backend legitimately needs to resolve — the font of
+     * a text element being the standing case, since what is drawn has to match what was measured.
+     *
+     * Reads from here record no dependency: the draw walk is outside the graph by construction.
+     * Reading is all a backend may do. Writing during a draw would mean a frame whose layout
+     * depends on its own drawing.
+     */
+    val graph: Graph get() = tree.graph
 
     /**
      * The low corner in window coordinates.

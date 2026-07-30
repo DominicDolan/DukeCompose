@@ -391,12 +391,67 @@ to forget. Three things it does deliberately:
 Dispatch is per element *kind* — `drawBox` / `drawText` / `drawCustom` — because text needs
 materially different treatment from a box.
 
+## Events
+
+`dsl-and-engine.md` §7.
+
+```kotlin
+child("button") {
+    val self = element
+    onClick { count++ }
+    style { color.set(if (g.isPressed(self)) DOWN else if (g.isHovered(self)) HOT else COLD) }
+    h { origin { 0.0 }; size { 120.0 } }
+    v { origin { 0.0 }; size { 32.0 } }
+}
+
+pointer.update(host, mouseX, mouseY, down = mouse.MB1.isDown)
+```
+
+**Hover and press are graph inputs**, written once per frame — the same kind of thing as viewport
+size or text content. That is the whole mechanism. There is no event node type, no governor, and
+no special case anywhere in `:reactivity`.
+
+The apparent cycle is `layout → hit test → hover → layout`, with a threshold discontinuity in it.
+It dissolves by hit-testing against the **previous frame's** geometry, which costs nothing real:
+one frame of lag is already inherent, since input is sampled before anything is drawn, so there is
+no "correct current hover" being given up.
+
+**`onClick` is retained, not polled**, and that is a coupling worth knowing about. Iteration B's
+`if (isHovering && mouse.MB1.hasBeenPressed) onClick()` reads beautifully but only fires if the
+block containing it runs — so polled events silently *require* per-frame composition, and under
+compose-once no click would ever be noticed. A handler registered during composition works under
+either policy. A click is a press and a release on the same element, so dragging off a button and
+letting go is not a click.
+
+**Elements are not interactive by default.** `interactive()` or `onClick` opts in, and the hit test
+returns the topmost element that did. Without that, decoration would swallow clicks meant for what
+is behind it, and there would need to be a notion of a "transparent" element to undo it.
+
+Hit testing walks in reverse paint order — later siblings above earlier, children above parents,
+first hit wins — with *no* early rejection on parent bounds. That is the obvious optimisation and
+it would be wrong: nothing constrains a child to its parent's box, so a menu hanging outside its
+container is ordinary rather than pathological.
+
+Two across-frame behaviours the tests pin down, because previous-frame hit testing breaks the
+within-frame cycle but not a limit cycle:
+
+- **Grow-on-hover is bistable, and that is wanted.** 20 tall, 30 when hovered, pointer at y=25:
+  two stable fixed points, and which one you land in depends on how you got there. Hysteresis for
+  free. The test drives it into *both*.
+- **Shrink-on-hover oscillates.** 30 tall, 20 when hovered, same pointer: hover → shrink → miss →
+  grow → hover, flickering at frame rate. A real bug class — CSS has it too — so `Pointer` counts
+  consecutive hover changes and reports once, naming *both* ends of the flip, since half of an
+  oscillation is "nothing is hovered" and reporting only the current state never names the culprit.
+
 ## What is not here yet
 
 - **Flex-shrink inside a shrink-to-fit container.** `clamped = true` reads the container's own
   main-axis size as an outer input, so a clamped row whose container is sized *by these children*
   is still a genuine cycle. Closing it means letting the governor claim the container's size too —
   the mechanism allows it, no container drives it yet.
+- **Keyboard focus, pointer capture and scroll.** `Pointer` handles hover, press and click.
+  Focus is application state — another input node — and routes without hit testing; drag needs
+  capture overriding the hit test; scroll containers need a clip region the hit test respects.
 - **Reconciliation.** `Element.index` is assigned at composition and never updated, so
   removal and reordering are not supported. Incremental composition also needs `reserve`/
   `define` in `:reactivity` so an expression can be re-pointed without orphaning its edges

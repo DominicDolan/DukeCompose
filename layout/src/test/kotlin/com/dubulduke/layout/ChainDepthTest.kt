@@ -86,7 +86,12 @@ class ChainDepthTest {
 
         // The property that makes a bigger stack a real fix rather than a hope: depth is linear in
         // stack size, so the requirement can be *computed* from a known worst-case chain length.
-        assertTrue(default > 2_000, "default stack managed only $default deep")
+        // A floor rather than a figure. The measured depth moves with JIT state — an interpreted
+        // frame is several times the size of a compiled one — so a busier build genuinely settles
+        // fewer levels on the same stack. It has been seen between roughly 1 500 and 4 000 here.
+        // The claim being defended is "a default stack is a real constraint in the low thousands,
+        // i.e. an ordinary list", not any particular number; §11.2 carries the measurements.
+        assertTrue(default > 1_000, "default stack managed only $default deep")
         assertTrue(
             big > default * 20,
             "64 MB gave $big against $default on the default stack; depth is not scaling with stack"

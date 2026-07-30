@@ -1,0 +1,154 @@
+package com.dubulduke.dsl
+
+import com.dubulduke.layout.Element
+import com.dubulduke.layout.ElementBuilder
+import com.dubulduke.layout.ElementTree
+import com.dubulduke.layout.FontRef
+import com.dubulduke.layout.interactive
+import com.dubulduke.layout.onClick
+import com.dubulduke.layout.style
+import com.dubulduke.reactivity.Graph
+
+/**
+ * Makes the application's style objects. `dsl-and-engine.md` §4.5 — there are no framework
+ * default styles; the application supplies this, exactly as iteration A's `createStyle()` did.
+ */
+fun interface StyleFactory<S : Any> {
+    fun create(): S
+}
+
+/**
+ * The authoring surface for one element: its own configuration, and its children.
+ *
+ * ### Why `S` is here and not on `:layout`
+ *
+ * The style type is a **type parameter supplied by the application** (§4.5), because platforms
+ * differ in capability and a fixed framework style class must take either the union — properties
+ * that silently no-op — or the intersection, with capabilities unreachable. Threading it through
+ * the scope types is what buys **compile-time capability checking**: a component can declare
+ *
+ * ```kotlin
+ * fun <S> ElementScope<S>.card(body: ElementScope<S>.() -> Unit) where S : HasBackground, S : HasElevation
+ * ```
+ *
+ * and it will not compile against a style type lacking either, rather than silently no-opping at
+ * runtime. That is also what lets a host define a base style representing its own capabilities and
+ * an application extend it further — a `glowLevel` on top of a Mechanica style, say — with
+ * components in between constrained to exactly what they use.
+ *
+ * `:layout` stays non-generic underneath, holding the style as an opaque payload, because nothing
+ * there may read it: a style object cannot have slot identity, so anything layout read from one
+ * would be invisible to invalidation (§4.5's hard rule). The parameter is an *authoring* concern,
+ * so it lives in the authoring layer.
+ *
+ * ### Children are statements
+ *
+ * There is no `children { }` block. Children *are* the element-factory calls, as in kotlinx.html
+ * and Compose; ambiguity does not arise because self-configuration is always `layout` / `style` /
+ * `id` / `classes` and children are always factories (§3.1).
+ */
+@DukeDsl
+class ElementScope<S : Any> internal constructor(
+    @JvmField internal val builder: ElementBuilder,
+    @JvmField internal val styles: StyleFactory<S>,
+    /**
+     * What this element's *container* wants for it. Applied before the element's own `layout { }`,
+     * so overriding one slot is ordinary last-write-wins (§2.4).
+     */
+    private val inherited: (LayoutScope.() -> Unit)?,
+) {
+    @JvmField
+    val element: Element = builder.element
+
+    val tree: ElementTree get() = builder.tree
+    val graph: Graph get() = builder.tree.graph
+
+    /** This element, for utilities and for reading its own geometry outside a layout block. */
+    val self: Layout get() = Layout(element)
+
+    private var layoutScope: LayoutScope? = null
+
+    /** Defaults this scope stamps on *its* children. Null unless a container scope sets one. */
+    internal var childDefaults: (LayoutScope.() -> Unit)? = null
+
+    private fun scope(): LayoutScope =
+        layoutScope ?: LayoutScope(graph, tree, element).also {
+            layoutScope = it
+            inherited?.let { d -> it.applyDefaults(d) }
+        }
+
+    /**
+     * Position and size this element.
+     *
+     * May be called more than once — a helper and a call site can each contribute — and the later
+     * assignment wins per slot. That is what makes `dsl-and-engine.md` §2.3's utilities composable:
+     * `layout { fillWidth(8.0); below(4.0); fixedHeight(40.0) }` is three helpers writing five
+     * different slots, and two of them conflict only if they assign the same one.
+     */
+    fun layout(block: LayoutScope.() -> Unit) {
+        scope().block()
+    }
+
+    /** Give this element measurable text. Font and text are framework-owned, never style (§4.5). */
+    fun text(text: String, font: FontRef) {
+        builder.text(text, font)
+    }
+
+    /**
+     * Fill in this element's style. The object comes from the application's [StyleFactory], and
+     * the block is a tracked expression — reading hover or a signal inside it invalidates it
+     * correctly, and nothing else.
+     */
+    fun style(block: S.() -> Unit) {
+        builder.style(styles.create(), block)
+    }
+
+    /** Tag this element for the JSON dump. Not a selector — see §3.4. */
+    fun classes(vararg names: String) {
+        builder.classes(*names)
+    }
+
+    /**
+     * Name this element for the backend. `"box"` and `"text"` are drawn by the standard paths;
+     * anything else reaches `DukeBackend.drawCustom`, which is the seam for a custom-shaded widget.
+     */
+    fun kind(kind: String) {
+        builder.kind(kind)
+    }
+
+    /** Make this element hit-testable, giving it hover and press state. */
+    fun interactive() {
+        builder.interactive()
+    }
+
+    /** Register a click handler. Retained rather than polled, so it works under compose-once. */
+    fun onClick(handler: () -> Unit) {
+        builder.onClick(handler)
+    }
+
+    /**
+     * Add a child.
+     *
+     * The general form. `box`, `text`, `column`, `row` and the rest are all this with a
+     * container's defaults attached.
+     */
+    fun child(id: String? = null, body: ElementScope<S>.() -> Unit): Element =
+        builder.child(id) {
+            val scope = ElementScope(this, styles, this@ElementScope.childDefaults)
+            scope.body()
+            scope.finish()
+        }
+
+    internal fun finish() {
+        // `h { }` builds the axis from whatever the block registered and returns it built, so the
+        // registration has to happen *inside* the block — capturing the builder for later would
+        // hand back an axis with nothing on it.
+        val s = scope()
+        builder.h { s.commitAxis(horizontal = true, axis = this) }
+        // `startIsLow = false` on the vertical axis is what makes `top` the origin rather than the
+        // end — i.e. y-down, so `top { 0.0 }` is the top of the screen and a list stacks downwards
+        // by adding. `:layout` supports either orientation; the DSL picks one and states it, since
+        // an authoring surface where `top` sometimes means the bottom would be indefensible.
+        builder.v(startIsLow = false) { s.commitAxis(horizontal = false, axis = this) }
+    }
+}

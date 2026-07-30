@@ -116,7 +116,12 @@ class ElementTree(
  */
 @LayoutDsl
 class ElementBuilder internal constructor(
-    internal val tree: ElementTree,
+    /**
+     * Public rather than internal because the DSL layer lives in another module and needs the
+     * graph and the id index to build its scopes on. Nothing here is a supported authoring
+     * surface — `:dsl` is.
+     */
+    @JvmField val tree: ElementTree,
     @JvmField val element: Element,
 ) {
     /** The horizontal axis. Exactly one call per element. */

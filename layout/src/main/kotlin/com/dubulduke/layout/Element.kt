@@ -75,6 +75,26 @@ class Element internal constructor(
         internal set
 
     /**
+     * Hover and press state, or `null` for an element that never opted in.
+     *
+     * Non-null is what makes an element hit-testable at all — see [interactive]. Allocated rather
+     * than always present because it is two graph nodes per element, and a UI is mostly decoration
+     * that should never intercept a click.
+     */
+    var interaction: Interaction? = null
+        internal set
+
+    /**
+     * Retained click handler, or `null`. Registered during composition and dispatched by [Pointer].
+     *
+     * Retained rather than polled, which is a coupling worth naming: a polled `if (isHovering &&
+     * pressed)` only fires if the block containing it runs, so it silently requires per-frame
+     * composition and would never fire under compose-once (`dsl-and-engine.md` §7.4).
+     */
+    var onClick: (() -> Unit)? = null
+        internal set
+
+    /**
      * What this element is, for the JSON dump of `dsl-and-engine.md` §8. Like [classes], carried
      * rather than interpreted: the layout algorithm does not branch on it. The DSL is the source
      * of anything beyond `"box"` and `"text"`.
