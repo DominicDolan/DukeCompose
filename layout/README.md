@@ -443,6 +443,26 @@ within-frame cycle but not a limit cycle:
   consecutive hover changes and reports once, naming *both* ends of the flip, since half of an
   oscillation is "nothing is hovered" and reporting only the current state never names the culprit.
 
+## Structural change
+
+`dispose(element)` frees everything a subtree owns — axis slots, content, style, interaction,
+flex factor, the child-list node, its id binding — and republishes the parent's child list. That
+republish is what wakes the siblings: `prev`, `next` and `children.maxOf { }` all read the child
+list node, so a removal invalidates exactly the expressions that navigated past the removed
+element and nothing else. `Element.index` is mutable for the same reason.
+
+`editChildren(container) { … }` gives the three primitives that cannot be written from outside —
+`create` a detached child, `dispose` one, `install` an ordered list. Deliberately no policy: what
+the new children *are* is keyed matching, which is an authoring concern and lives in `:dsl`
+(`forEach`). `Region` and `reconcile()` are the hook that drives it.
+
+Ordering constraint worth knowing: a clamped flex row's governor is disposed **before** the
+children whose size slots it claims, which is why `Element.governor` exists. A governor that lost
+an output fails its totality check on the next solve, naming the output rather than the disposal
+that caused it.
+
+`layout-design.md` Q10, settled.
+
 ## What is not here yet
 
 - **Flex-shrink inside a shrink-to-fit container.** `clamped = true` reads the container's own
@@ -452,10 +472,6 @@ within-frame cycle but not a limit cycle:
 - **Keyboard focus, pointer capture and scroll.** `Pointer` handles hover, press and click.
   Focus is application state — another input node — and routes without hit testing; drag needs
   capture overriding the hit test; scroll containers need a clip region the hit test respects.
-- **Reconciliation.** `Element.index` is assigned at composition and never updated, so
-  removal and reordering are not supported. Incremental composition also needs `reserve`/
-  `define` in `:reactivity` so an expression can be re-pointed without orphaning its edges
-  (`layout-design.md` Q10, Q11).
 
 All three of the plan's go/no-go points — steps 3, 4 and 6 — now pass. Step 3 is covered by
 `ElementTreeTest`: a 500-row list chained through `prev`, and a shrink-wrap panel

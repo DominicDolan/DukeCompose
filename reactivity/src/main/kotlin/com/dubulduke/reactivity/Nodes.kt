@@ -1,12 +1,34 @@
 package com.dubulduke.reactivity
 
 /**
- * Handle to a node in a [Graph]. A value class over an `Int` index, so the public API stays
+ * Handle to a node in a [Graph]. A value class over an `Int`, so the public API stays
  * handle-based and a later struct-of-arrays rewrite of the internals changes nothing here.
+ *
+ * The `Int` is an index *and* a generation tag, packed. Disposal recycles indices — without
+ * that, a UI whose list churns grows the node array forever — and recycling makes a stale
+ * handle silently address somebody else's node, which is the worst failure this codebase could
+ * have: not a crash but a plausible wrong number. The generation turns it into a named error
+ * ([Graph.dispose]). It wraps at 256 reuses of one index, so the check is overwhelmingly
+ * likely rather than certain; that is worth an eight-bit field and one compare on the read path.
  */
 @JvmInline
-value class Slot(val id: Int) {
-    override fun toString(): String = "Slot($id)"
+value class Slot(val bits: Int) {
+    internal val index: Int get() = bits and INDEX_MASK
+    internal val generation: Int get() = (bits ushr INDEX_BITS) and GENERATION_MASK
+
+    override fun toString(): String = "Slot($index)"
+
+    companion object {
+        internal const val INDEX_BITS = 24
+        internal const val INDEX_MASK = (1 shl INDEX_BITS) - 1
+        internal const val GENERATION_MASK = 0xFF
+
+        /** The largest number of live nodes one graph can hold. */
+        const val MAX_NODES: Int = INDEX_MASK
+
+        internal fun of(index: Int, generation: Int): Slot =
+            Slot(index or ((generation and GENERATION_MASK) shl INDEX_BITS))
+    }
 }
 
 /**
@@ -15,8 +37,14 @@ value class Slot(val id: Int) {
  * cheaper and more honest than a runtime check on the read path. See [Graph.governor].
  */
 @JvmInline
-value class GovernorHandle(val id: Int) {
-    override fun toString(): String = "Governor($id)"
+value class GovernorHandle(val bits: Int) {
+    internal val index: Int get() = bits and Slot.INDEX_MASK
+    internal val generation: Int get() = (bits ushr Slot.INDEX_BITS) and Slot.GENERATION_MASK
+
+    /** The governor as a slot handle, for the disposal and introspection paths. */
+    internal val asSlot: Slot get() = Slot(bits)
+
+    override fun toString(): String = "Governor($index)"
 }
 
 /**
@@ -69,7 +97,20 @@ internal class Link(
  * | governor | [Solve] | `null` (has [firstChild]) |
  * | governor output | `null` | the governor |
  */
-internal class Node(val slot: Slot, @JvmField val name: String?) {
+internal class Node(@JvmField val index: Int) {
+    @JvmField var name: String? = null
+
+    /**
+     * Bumped on every disposal, and packed into the [Slot] handed out at allocation. A handle
+     * whose generation no longer matches names a node that has been disposed.
+     */
+    @JvmField var generation: Int = 0
+
+    /** True between [Graph.dispose] and the next reuse of this index. Diagnostics only. */
+    @JvmField var disposed: Boolean = false
+
+    val slot: Slot get() = Slot.of(index, generation)
+
     @JvmField var value: Double = 0.0
 
     /** Non-scalar payload. Meaningful only when [isRef]; [value] is unused in that case. */
@@ -120,6 +161,29 @@ internal class Node(val slot: Slot, @JvmField val name: String?) {
 
     /** Instrumentation: how many times this node's [compute] has run. */
     @JvmField var recomputes: Int = 0
+
+    /** Return this node to its just-allocated state, for reuse of a recycled index. */
+    fun reset(name: String?) {
+        this.name = name
+        disposed = false
+        value = 0.0
+        ref = null
+        isRef = false
+        refEquality = RefEquality.IDENTITY
+        deps = null
+        depsTail = null
+        subs = null
+        subsTail = null
+        flags = Flags.NONE
+        depGen = 0
+        height = 0
+        epsilon = 0.0
+        compute = null
+        firewall = null
+        firstChild = null
+        nextChild = null
+        recomputes = 0
+    }
 
     override fun toString(): String = name?.let { "$it${slot}" } ?: slot.toString()
 }

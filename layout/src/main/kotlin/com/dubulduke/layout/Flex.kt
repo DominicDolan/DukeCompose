@@ -250,6 +250,9 @@ private fun ElementBuilder.governedRow(
         }
     }
 
+    // Held on the element so subtree disposal can release the claims before it frees the
+    // children whose size slots they are.
+    container.governor = gov
     return FlexRow(container, direction, FlexMode.GOVERN, null, null, gov)
 }
 

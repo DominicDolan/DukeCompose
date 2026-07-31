@@ -1,5 +1,6 @@
 package com.dubulduke.layout
 
+import com.dubulduke.reactivity.GovernorHandle
 import com.dubulduke.reactivity.Graph
 import com.dubulduke.reactivity.Slot
 
@@ -19,10 +20,19 @@ import com.dubulduke.reactivity.Slot
 class Element internal constructor(
     /** `null` only for the root. */
     @JvmField val parent: Element?,
-    /** Position in [parent]'s child list. Meaningless for the root, where it is 0. */
-    @JvmField val index: Int,
+    index: Int,
     /** Stable identity and the handle for `query`. See `dsl-and-engine.md` §3.4. */
     @JvmField val id: String?,
+    /**
+     * Reconciliation key, or `null` for a statically composed element.
+     *
+     * What matches an element across a structural change. Positional matching alone is not
+     * enough — inserting an item at the head of a list would re-associate every element with
+     * the wrong data and throw away every memoised value below it (`dsl-and-engine.md` §5.7,
+     * constraint 2). The key is also what names the element's graph nodes, so a diagnostic
+     * survives a reorder.
+     */
+    @JvmField val key: Any?,
     /**
      * Dotted path from the root, used to name this element's graph nodes. Diagnostics live or
      * die on this: a cycle report saying `panel.body.h.size` is actionable, one saying
@@ -40,6 +50,33 @@ class Element internal constructor(
      */
     val childrenSlot: Slot,
 ) {
+    /**
+     * Position in [parent]'s child list. Meaningless for the root, where it is 0.
+     *
+     * Mutable, which is what reconciliation costs here: removing a sibling shifts everyone
+     * after it, and `prev`, `next` and `index` all read this. The setter stays internal — an
+     * author moving it would silently desynchronise it from the list it indexes into.
+     */
+    var index: Int = index
+        internal set
+
+    /**
+     * Set by [ElementTree.dispose]. A disposed element's slots are gone, so reading its
+     * geometry is an error from the graph rather than a plausible stale number.
+     */
+    var disposed: Boolean = false
+        internal set
+
+    /**
+     * The governor resolving this element's children, if it is a clamped flex row.
+     *
+     * Held so disposal can release it *before* the children whose size slots it claims — a
+     * governor that lost an output would fail its totality check on the next solve, naming the
+     * output rather than the disposal that caused it.
+     */
+    var governor: GovernorHandle? = null
+        internal set
+
     /**
      * Carried for the JSON dump of `dsl-and-engine.md` §8, which uses them to locate elements
      * in output. The layout algorithm never reads them; they are not selectors.
@@ -123,6 +160,9 @@ class Element internal constructor(
 
     internal fun hasBothAxes() = _h != null && _v != null
 
+    internal val hOrNull: Axis? get() = _h
+    internal val vOrNull: Axis? get() = _v
+
     /**
      * The child snapshot, read **without** recording a dependency.
      *
@@ -131,6 +171,15 @@ class Element internal constructor(
      * invalidate. The two return the same list; only the edge differs.
      */
     val children: List<Element> get() = snapshot
+
+    /**
+     * The child list as it stands *right now*, including children added since the last publish.
+     *
+     * Differs from [children] only during composition and inside a reconcile, which is exactly
+     * when the difference matters: [children] is the published snapshot the graph sees, and this
+     * is the list being assembled. Not for layout expressions — neither of these records an edge.
+     */
+    val currentChildren: List<Element> get() = childList
 
     internal var snapshot: List<Element> = emptyList()
     internal val childList = ArrayList<Element>()

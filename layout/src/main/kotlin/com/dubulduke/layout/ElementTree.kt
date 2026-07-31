@@ -1,6 +1,7 @@
 package com.dubulduke.layout
 
 import com.dubulduke.reactivity.Graph
+import com.dubulduke.reactivity.RefComputation
 import com.dubulduke.reactivity.RefEquality
 import com.dubulduke.reactivity.Slot
 
@@ -47,11 +48,14 @@ class ElementTree(
         return e
     }
 
-    internal fun newElement(parent: Element?, index: Int, id: String?): Element {
-        val name = id ?: if (parent == null) "root" else "[$index]"
+    internal fun newElement(parent: Element?, index: Int, id: String?, key: Any? = null): Element {
+        // The key names the element in preference to the index, so a diagnostic survives a
+        // reorder: `list.{drafts}.label` still points at the same row after an insertion above
+        // it, where `list.[3].label` would by then mean something else.
+        val name = id ?: key?.let { "{$it}" } ?: if (parent == null) "root" else "[$index]"
         val path = if (parent == null) name else "${parent.path}.$name"
         val slot = graph.refInput(emptyList<Element>(), "$path.children")
-        val e = Element(parent, index, id, path, slot)
+        val e = Element(parent, index, id, key, path, slot)
         if (id != null) bind(id, e)
         return e
     }
@@ -105,6 +109,164 @@ class ElementTree(
 
     /** Number of elements in the tree. */
     val size: Int get() = if (_root == null) 0 else { var n = 0; walk { _, _ -> n++ }; n }
+
+    // ---------------------------------------------------------------------------------
+    // Structural change — `layout-design.md` Q10
+    // ---------------------------------------------------------------------------------
+
+    private val regions = ArrayList<Region>()
+
+    /** Register a region that may rebuild its children between frames. See [reconcile]. */
+    fun register(region: Region) {
+        regions += region
+    }
+
+    /**
+     * Give every registered region a chance to rebuild, and report how many did.
+     *
+     * A phase of its own, between input and layout, and that placement is the whole design:
+     * building an element allocates graph nodes, which cannot happen during evaluation, and
+     * disposing one invalidates its readers, which must happen before anything reads them.
+     * Composition, reconciliation and layout are therefore three separate passes over three
+     * separate concerns rather than one interleaved walk.
+     *
+     * Cost is O(regions) when nothing changed — each region compares its key list and stops.
+     * A region whose keys did change costs O(its items), never O(tree): untouched subtrees are
+     * not visited, not re-run, and keep every memoised value and every dependency edge. That
+     * is the difference between this and re-running composition each frame, which the design's
+     * O(changed) premise rules out (`layout-design.md` Q10).
+     */
+    fun reconcile(): Int {
+        var changed = 0
+        var i = 0
+        while (i < regions.size) {
+            val r = regions[i]
+            if (r.container.disposed) {
+                // A region inside a subtree that has itself been removed. Dropped here rather
+                // than at disposal time so that nested regions need no back-references.
+                regions.removeAt(i)
+                continue
+            }
+            if (r.reconcile()) changed++
+            i++
+        }
+        return changed
+    }
+
+    /** Registered regions that are still live. Diagnostics and tests. */
+    val regionCount: Int get() = regions.count { !it.container.disposed }
+
+    /**
+     * Destroy [e] and everything under it: its graph nodes, its id bindings, its place in its
+     * parent's child list.
+     *
+     * The parent's child list is republished, which is what wakes the siblings — `prev`, `next`
+     * and `children.maxOf { }` all read that node, so a removal invalidates exactly the
+     * expressions that navigated past the removed element and nothing else.
+     */
+    fun dispose(e: Element) {
+        check(e !== _root) { "the root cannot be disposed; discard the tree instead" }
+        check(!e.disposed) { "$e is already disposed" }
+        val parent = checkNotNull(e.parent) { "$e has no parent but is not the root" }
+        parent.childList.remove(e)
+        disposeSubtree(e)
+        reindexAndPublish(parent)
+    }
+
+    /**
+     * Free every node the subtree owns, deepest concern first.
+     *
+     * The governor goes before the children, because it claims their size slots and a governor
+     * that lost an output fails its totality check on the next solve — naming the output rather
+     * than the disposal that actually caused it.
+     */
+    internal fun disposeSubtree(e: Element) {
+        e.governor?.let {
+            graph.dispose(it)
+            e.governor = null
+        }
+        for (c in e.childList) disposeSubtree(c)
+        e.childList.clear()
+        e.snapshot = emptyList()
+
+        e.id?.let { id -> ids.remove(id)?.let { graph.dispose(it) } }
+        e.content?.let { graph.dispose(it.textSlot); graph.dispose(it.fontSlot) }
+        e.styleNode?.let { graph.dispose(it.slot) }
+        e.interaction?.let { graph.dispose(it.hoveredSlot); graph.dispose(it.pressedSlot) }
+        e.flexSlot?.let { graph.dispose(it) }
+        e.hOrNull?.let { graph.dispose(it.firstSlot); graph.dispose(it.secondSlot) }
+        e.vOrNull?.let { graph.dispose(it.firstSlot); graph.dispose(it.secondSlot) }
+        graph.dispose(e.childrenSlot)
+
+        e.disposed = true
+    }
+
+    internal fun reindexAndPublish(parent: Element) {
+        for ((i, c) in parent.childList.withIndex()) c.index = i
+        parent.snapshot = parent.childList.toList()
+        graph.setRefInput(parent.childrenSlot, parent.snapshot)
+    }
+
+    /**
+     * Rebuild one element's children in place.
+     *
+     * Deliberately does not decide *what* the new children are — keyed matching is an authoring
+     * concern and lives in `:dsl`. This layer supplies only the three primitives that cannot be
+     * written from outside: build a detached child, destroy one, and install an ordered list.
+     */
+    fun editChildren(container: Element, edit: ChildEdit.() -> Unit) {
+        check(!container.disposed) { "$container has been disposed" }
+        ChildEdit(this, container).edit()
+    }
+}
+
+/**
+ * A region of the tree whose children are rebuilt when something outside the graph changes.
+ *
+ * The interface is here rather than in `:dsl` so [ElementTree.reconcile] can drive regions
+ * without knowing what a keyed list is. `:layout` supplies the mechanism; the policy — how keys
+ * are matched, what a changed item means — belongs to the authoring layer.
+ */
+interface Region {
+    /** The element whose children this region owns. A disposed one is dropped from the tree. */
+    val container: Element
+
+    /** Rebuild if needed. Returns whether anything actually changed. */
+    fun reconcile(): Boolean
+}
+
+/** The structural primitives, handed to [ElementTree.editChildren]. */
+class ChildEdit internal constructor(
+    @JvmField val tree: ElementTree,
+    @JvmField val container: Element,
+) {
+    /** The children currently installed, in order. */
+    val current: List<Element> get() = container.childList
+
+    /**
+     * Build a child, **detached**: it exists and owns its nodes, but is not in the child list
+     * until [install]. Two-step because the caller usually wants to build a whole new ordered
+     * set and install it at once, rather than publish the list once per item.
+     */
+    fun create(key: Any?, id: String? = null, build: ElementBuilder.() -> Unit): Element {
+        val e = tree.newElement(container, container.childList.size, id, key)
+        ElementBuilder(tree, e).apply(build).finish()
+        return e
+    }
+
+    /** Destroy a child and everything under it. Removes it from [current] too. */
+    fun dispose(child: Element) {
+        require(child.parent === container) { "$child is not a child of $container" }
+        container.childList.remove(child)
+        tree.disposeSubtree(child)
+    }
+
+    /** Install this exact ordered list, reindex it, and republish the child node. */
+    fun install(children: List<Element>) {
+        container.childList.clear()
+        container.childList.addAll(children)
+        tree.reindexAndPublish(container)
+    }
 }
 
 /**
@@ -157,14 +319,36 @@ class ElementBuilder internal constructor(
         return c
     }
 
+    /**
+     * Text computed from the graph rather than fixed at composition.
+     *
+     * `dsl-and-engine.md` §5.5's first row: under compose-once, `text("Score: $score")` freezes
+     * the string at setup and never updates again — a failure that is invisible while
+     * composition runs every frame and silent once it does not. A derived node fixes it, and
+     * costs nothing when the inputs are still: [RefEquality.EQUALS] means an interpolation that
+     * rebuilds an equal string re-triggers no measurement.
+     */
+    fun text(font: FontRef, text: RefComputation): Content {
+        check(element.content == null) { "$element already has content" }
+        val g = tree.graph
+        val c = Content(
+            textSlot = g.deriveRef("${element.path}.text", RefEquality.EQUALS, text),
+            fontSlot = g.refInput(font, "${element.path}.font", RefEquality.IDENTITY),
+            metrics = tree.textMetrics,
+        )
+        element.content = c
+        element.kind = "text"
+        return c
+    }
+
     /** Override the reported [Element.kind]. Carried into the JSON dump, never interpreted. */
     fun kind(kind: String) {
         element.kind = kind
     }
 
     /** Append a child and build it. Returns it, for the cases that want to hold a reference. */
-    fun child(id: String? = null, build: ElementBuilder.() -> Unit): Element {
-        val e = tree.newElement(element, element.childList.size, id)
+    fun child(id: String? = null, key: Any? = null, build: ElementBuilder.() -> Unit): Element {
+        val e = tree.newElement(element, element.childList.size, id, key)
         element.childList += e
         ElementBuilder(tree, e).apply(build).finish()
         return e

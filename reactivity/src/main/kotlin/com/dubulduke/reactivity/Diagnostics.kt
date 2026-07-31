@@ -75,10 +75,15 @@ class Stats {
     var linksTrimmed: Long = 0
         internal set
 
+    /** Nodes destroyed by [Graph.dispose]. Their indices are recycled. */
+    var disposed: Long = 0
+        internal set
+
     fun reset() {
-        marked = 0; recomputed = 0; linksAllocated = 0; linksTrimmed = 0
+        marked = 0; recomputed = 0; linksAllocated = 0; linksTrimmed = 0; disposed = 0
     }
 
     override fun toString(): String =
-        "Stats(marked=$marked, recomputed=$recomputed, linksAllocated=$linksAllocated, linksTrimmed=$linksTrimmed)"
+        "Stats(marked=$marked, recomputed=$recomputed, linksAllocated=$linksAllocated, " +
+            "linksTrimmed=$linksTrimmed, disposed=$disposed)"
 }

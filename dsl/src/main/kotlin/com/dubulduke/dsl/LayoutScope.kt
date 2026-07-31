@@ -139,6 +139,9 @@ class LayoutScope internal constructor(
     private var defaultsApplying = false
     private var defaultSeq = 0
 
+    /** Whether a container stamped anything at all. Only used to make an error more specific. */
+    private var anyDefaults = false
+
     // ---------------------------------------------------------------------------
     // Write
     // ---------------------------------------------------------------------------
@@ -152,10 +155,45 @@ class LayoutScope internal constructor(
     fun height(e: LayoutExpression) = set(Edge.HEIGHT, e)
     fun centerY(e: LayoutExpression) = set(Edge.CENTER_Y, e)
 
+    /**
+     * An axis a container mechanism owns outright — a flex row's main axis, where both the position
+     * and the size are the row's to decide (§3.3).
+     *
+     * This is a third precedence level above the two [fromDefault] describes, and it is a different
+     * kind of thing: not "the container's wish yields to the author's" but "the author has no say
+     * here at all". A flex item that could also state its own width would be writing a slot the row
+     * already writes, which `:layout` rejects with a message about axes rather than about flex.
+     */
+    private var reservedHorizontal = false
+    private var reservedVertical = false
+
+    internal fun reserve(horizontal: Boolean) {
+        if (horizontal) reservedHorizontal = true else reservedVertical = true
+    }
+
+    internal fun isReserved(horizontal: Boolean): Boolean =
+        if (horizontal) reservedHorizontal else reservedVertical
+
     private fun set(edge: Edge, e: LayoutExpression) {
+        if (isReserved(edge.horizontal)) {
+            // A default landing on a reserved axis is dropped rather than fatal, for the same reason
+            // defaults yield generally: a container stamping `left` on its children should not stop
+            // one of them being a flex item. An *explicit* write is a mistake worth naming.
+            if (defaultsApplying) return
+            val axisName = if (edge.horizontal) "horizontal" else "vertical"
+            throw IllegalStateException(
+                "$element cannot set ${edge.name.lowercase()}: its $axisName axis is owned by the " +
+                    "flex row containing it, which decides both position and size along that axis. " +
+                    "Set the item's flex factor or fixed size on the row instead, and use this " +
+                    "block for the cross axis."
+            )
+        }
         slots[edge.ordinal] = e
         fromDefault[edge.ordinal] = defaultsApplying
-        if (defaultsApplying) defaultOrder[edge.ordinal] = defaultSeq++
+        if (defaultsApplying) {
+            defaultOrder[edge.ordinal] = defaultSeq++
+            anyDefaults = true
+        }
     }
 
     /** Run the container's block, tagging everything it writes as yielding to the element's own. */
@@ -301,10 +339,21 @@ class LayoutScope internal constructor(
         }
         if (present.size < 2) {
             val set = if (present.isEmpty()) "nothing is" else "only ${present[0].name.lowercase()} is"
+            // Naming the absence of defaults is worth the branch: the commonest cause of this is
+            // an element whose parent was never made a container — `forEach` items and the root
+            // are the two that have no `column`/`row` call to do it for them — and the difference
+            // between "I forgot a slot" and "my parent stamps nothing" is not otherwise visible.
+            val hint = if (anyDefaults) {
+                ""
+            } else {
+                " No container defaults reached this element, so every slot has to come from its " +
+                    "own block; if its parent was meant to lay it out, the parent needs " +
+                    "stackDown/stackAcross (or to be a column/row)."
+            }
             throw IllegalStateException(
                 "$element under-constrains its $axisName axis: $set set, and an axis needs two of " +
                     "${if (horizontal) "left/right/width/centerX" else "top/bottom/height/centerY"}. " +
-                    "A default of zero would place it somewhere plausible and wrong."
+                    "A default of zero would place it somewhere plausible and wrong.$hint"
             )
         }
         write(axis, present[0])

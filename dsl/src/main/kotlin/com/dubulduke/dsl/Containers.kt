@@ -46,6 +46,18 @@ fun <S : Any> ElementScope<S>.label(
     body()
 }
 
+/** A [label] whose text is computed. See [ElementScope.text]. */
+fun <S : Any> ElementScope<S>.label(
+    text: () -> String,
+    font: FontRef,
+    id: String? = null,
+    body: ElementScope<S>.() -> Unit = {},
+): Element = child(id) {
+    text(font, text)
+    layout { height { self.contentHeight } }
+    body()
+}
+
 /**
  * Stack children vertically, each below the last.
  *
@@ -57,11 +69,7 @@ fun <S : Any> ElementScope<S>.column(
     id: String? = null,
     body: ElementScope<S>.() -> Unit,
 ): Element = child(id) {
-    childDefaults = {
-        left { parent.left }
-        right { parent.right }
-        top { prev?.let { it.bottom + gap } ?: parent.top }
-    }
+    stackDown(gap)
     body()
 }
 
@@ -71,12 +79,40 @@ fun <S : Any> ElementScope<S>.row(
     id: String? = null,
     body: ElementScope<S>.() -> Unit,
 ): Element = child(id) {
+    stackAcross(gap)
+    body()
+}
+
+// -------------------------------------------------------------------------------------
+// Container behaviour, applied to *this* element rather than to a new child.
+//
+// [column] and [row] can only ever make a child a container, which leaves an element you did
+// not create — a `forEach` item, or the root — with no way to become one. Splitting the
+// defaults out costs nothing and closes that gap: `column(gap) { … }` is now exactly
+// `child { stackDown(gap); … }`.
+// -------------------------------------------------------------------------------------
+
+/**
+ * Lay *this* element's children out vertically, each below the last. [column]'s half.
+ *
+ * Call it before adding children: defaults are read when a child is created, so a child added
+ * first does not get them.
+ */
+fun <S : Any> ElementScope<S>.stackDown(gap: Double = 0.0) {
+    childDefaults = {
+        left { parent.left }
+        right { parent.right }
+        top { prev?.let { it.bottom + gap } ?: parent.top }
+    }
+}
+
+/** Lay *this* element's children out horizontally, each after the last. [row]'s half. */
+fun <S : Any> ElementScope<S>.stackAcross(gap: Double = 0.0) {
     childDefaults = {
         top { parent.top }
         bottom { parent.bottom }
         left { prev?.let { it.right + gap } ?: parent.left }
     }
-    body()
 }
 
 /**

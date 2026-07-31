@@ -28,6 +28,50 @@ class Graph {
 
     private val nodes = ArrayList<Node>()
 
+    /** Indices of disposed nodes, available for reuse. See [dispose]. */
+    private val freeIndices = ArrayList<Int>()
+
+    /**
+     * Allocate a node, reusing a disposed index when one is available.
+     *
+     * Reuse is what keeps a churning UI bounded: without it a list that replaces its items
+     * every second grows the node array forever, and `layout-design.md` Q10 becomes a memory
+     * leak with extra steps. The generation tag on [Slot] is what makes reuse safe to expose.
+     */
+    private fun allocate(name: String?): Node {
+        val n: Node
+        if (freeIndices.isEmpty()) {
+            check(nodes.size < Slot.MAX_NODES) { "graph is full: ${nodes.size} nodes" }
+            n = Node(nodes.size)
+            nodes += n
+        } else {
+            n = nodes[freeIndices.removeAt(freeIndices.size - 1)]
+        }
+        n.reset(name)
+        return n
+    }
+
+    /**
+     * Resolve a handle, rejecting one whose node has since been disposed.
+     *
+     * One compare on the hot read path, and worth it: without the check a recycled index makes
+     * a stale handle read somebody else's value, which is a plausible wrong number rather than
+     * a crash — the failure mode this whole design exists to rule out.
+     */
+    private fun node(g: GovernorHandle): Node = node(g.asSlot)
+
+    private fun node(s: Slot): Node {
+        val n = nodes[s.index]
+        if (n.generation != s.generation) {
+            throw IllegalStateException(
+                "$s refers to a node that has been disposed" +
+                    (if (n.disposed) "" else " and its index reused by $n") +
+                    "; a handle must not outlive the element that owned it"
+            )
+        }
+        return n
+    }
+
     /** The node currently running its compute. Reads inside it become its dependencies. */
     private var context: Node? = null
 
@@ -47,9 +91,8 @@ class Graph {
     /** An input: a node with no compute, written from outside the graph via [setInput]. */
     fun input(initial: Double = 0.0, name: String? = null): Slot {
         checkThread()
-        val n = Node(Slot(nodes.size), name)
+        val n = allocate(name)
         n.value = initial
-        nodes += n
         return n.slot
     }
 
@@ -59,10 +102,9 @@ class Graph {
      */
     fun derive(name: String? = null, body: Computation): Slot {
         checkThread()
-        val n = Node(Slot(nodes.size), name)
+        val n = allocate(name)
         n.compute = body
         n.flags = Flags.DIRTY
-        nodes += n
         return n.slot
     }
 
@@ -76,11 +118,10 @@ class Graph {
         equality: RefEquality = RefEquality.IDENTITY,
     ): Slot {
         checkThread()
-        val n = Node(Slot(nodes.size), name)
+        val n = allocate(name)
         n.isRef = true
         n.refEquality = equality
         n.ref = initial
-        nodes += n
         return n.slot
     }
 
@@ -91,12 +132,11 @@ class Graph {
         body: RefComputation,
     ): Slot {
         checkThread()
-        val n = Node(Slot(nodes.size), name)
+        val n = allocate(name)
         n.isRef = true
         n.refEquality = equality
         n.compute = body
         n.flags = Flags.DIRTY
-        nodes += n
         return n.slot
     }
 
@@ -131,7 +171,7 @@ class Graph {
         // Validate before allocating, so a rejected governor leaves no partial state.
         require(claims.distinct().size == claims.size) { "duplicate claim in $claims" }
         for (s in claims) {
-            val out = nodes[s.id]
+            val out = node(s)
             require(out.compute == null) {
                 "$out has its own computation; it cannot also be governed"
             }
@@ -142,18 +182,122 @@ class Graph {
             require(existing == null) { "$out is already claimed by governor $existing" }
         }
 
-        val g = Node(Slot(nodes.size), name)
+        val g = allocate(name)
         g.compute = body
         g.flags = Flags.DIRTY
-        nodes += g
 
         for (s in claims) {
-            val out = nodes[s.id]
+            val out = node(s)
             out.firewall = g
             out.nextChild = g.firstChild
             g.firstChild = out
         }
-        return GovernorHandle(g.slot.id)
+        return GovernorHandle(g.slot.bits)
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Disposal
+    // ---------------------------------------------------------------------------------
+
+    /**
+     * Destroy a node, recycle its index, and wake everything that was reading it.
+     *
+     * This is what `layout-design.md` Q10 was waiting on. Composition can create nodes but had
+     * no way to destroy them, so structural change — a list that loses an item, a panel that
+     * closes — could only ever grow the graph.
+     *
+     * Three things happen, and the order matters:
+     *
+     *  1. **Subscribers are marked `DIRTY`.** A node that read this one has an answer derived
+     *     from something that no longer exists; it must re-run. Marking before unlinking is
+     *     what makes the propagation reach them at all.
+     *  2. **Every edge is cut**, in both directions. Leaving a subscriber's dependency link in
+     *     place would let a *recycled* node's later write mark a node that has nothing to do
+     *     with it — invalidation noise that is nearly impossible to trace back here.
+     *  3. **The index goes on the free list** and the generation is bumped, so the outstanding
+     *     handles that named this node now fail loudly instead of addressing its successor.
+     *
+     * Disposing a governor releases its claims; disposing a *claimed output* is refused,
+     * because a governor that lost one of its outputs would fail its totality check on the
+     * next solve with no indication of why. Dispose the governor first.
+     *
+     * Not callable during evaluation, for the same reason [setInput] is not: the graph would
+     * be mutating structure underneath a walk of that structure.
+     */
+    fun dispose(slot: Slot) {
+        checkThread()
+        check(context == null) { "nodes may not be disposed from inside a computation" }
+        val n = node(slot)
+        val fw = n.firewall
+        require(fw == null) {
+            "$n is claimed by governor $fw and cannot be disposed on its own; " +
+                "dispose the governor first, which releases every claim"
+        }
+
+        // A governor: release its outputs, which become ordinary unclaimed inputs again.
+        var c = n.firstChild
+        while (c != null) {
+            val next = c.nextChild
+            c.firewall = null
+            c.nextChild = null
+            c = next
+        }
+        n.firstChild = null
+
+        // Wake and detach every reader.
+        var l = n.subs
+        while (l != null) {
+            val next = l.nextSub
+            mark(l.sub, Flags.DIRTY)
+            removeDep(l.sub, l)
+            l = next
+        }
+        n.subs = null
+        n.subsTail = null
+
+        // Drop our own dependencies — the same walk [trimStaleDeps] does with the cursor rewound.
+        n.depsTail = null
+        trimStaleDeps(n)
+
+        n.reset(null)
+        n.generation = (n.generation + 1) and Slot.GENERATION_MASK
+        n.disposed = true
+        freeIndices += n.index
+        stats.disposed++
+    }
+
+    /** Dispose a governor, releasing every slot it claimed. */
+    fun dispose(governor: GovernorHandle) {
+        dispose(governor.asSlot)
+    }
+
+    /** Whether this handle still names a live node. */
+    fun isAlive(slot: Slot): Boolean {
+        val i = slot.index
+        return i < nodes.size && nodes[i].generation == slot.generation
+    }
+
+    /**
+     * Remove one edge from its subscriber's dependency list.
+     *
+     * O(deps) because that list is singly linked — the price of [Link] carrying one `nextDep`
+     * rather than a back pointer, which is the right trade when linking happens on every read
+     * and this happens only on disposal.
+     */
+    private fun removeDep(sub: Node, target: Link) {
+        var prev: Link? = null
+        var d = sub.deps
+        while (d != null) {
+            if (d === target) {
+                val next = d.nextDep
+                if (prev != null) prev.nextDep = next else sub.deps = next
+                if (sub.depsTail === d) sub.depsTail = prev
+                stats.linksTrimmed++
+                return
+            }
+            prev = d
+            d = d.nextDep
+        }
     }
 
     /**
@@ -165,7 +309,7 @@ class Graph {
     fun setEpsilon(slot: Slot, epsilon: Double) {
         checkThread()
         require(epsilon >= 0.0) { "epsilon must be non-negative" }
-        val n = nodes[slot.id]
+        val n = node(slot)
         require(!n.isRef) { "$n is a reference node; its comparison is a RefEquality" }
         n.epsilon = epsilon
     }
@@ -182,7 +326,7 @@ class Graph {
      */
     fun read(slot: Slot): Double {
         checkThread()
-        val dep = nodes[slot.id]
+        val dep = node(slot)
         require(!dep.isRef) { "$dep holds a reference; use readRef()" }
         settle(dep)
         return dep.value
@@ -195,7 +339,7 @@ class Graph {
      */
     fun readRef(slot: Slot): Any? {
         checkThread()
-        val dep = nodes[slot.id]
+        val dep = node(slot)
         require(dep.isRef) { "$dep holds a scalar; use read()" }
         settle(dep)
         return dep.ref
@@ -378,7 +522,7 @@ class Graph {
     /** Write an input. Marks dependents; recomputes nothing until something is read. */
     fun setInput(slot: Slot, value: Double) {
         checkThread()
-        val n = nodes[slot.id]
+        val n = node(slot)
         require(!n.isRef) { "$n holds a reference; use setRefInput()" }
         checkWritableInput(n)
         if (valueEquals(n, n.value, value)) return
@@ -389,7 +533,7 @@ class Graph {
     /** Write a non-scalar input. Marks dependents; recomputes nothing until something is read. */
     fun setRefInput(slot: Slot, value: Any?) {
         checkThread()
-        val n = nodes[slot.id]
+        val n = node(slot)
         require(n.isRef) { "$n holds a scalar; use setInput()" }
         checkWritableInput(n)
         if (refEquals(n, n.ref, value)) return
@@ -415,7 +559,7 @@ class Graph {
      */
     fun writeOutput(slot: Slot, value: Double) {
         checkThread()
-        val n = nodes[slot.id]
+        val n = node(slot)
         val g = context
         require(g != null && n.firewall === g) {
             "$n is not claimed by the running governor" +
@@ -593,24 +737,24 @@ class Graph {
     // ---------------------------------------------------------------------------------
 
     /** How many times this node's compute has run since it was created. */
-    fun recomputeCount(slot: Slot): Int = nodes[slot.id].recomputes
+    fun recomputeCount(slot: Slot): Int = node(slot).recomputes
 
     /** How many times this governor has solved. */
-    fun solveCount(g: GovernorHandle): Int = nodes[g.id].recomputes
+    fun solveCount(g: GovernorHandle): Int = node(g).recomputes
 
     /**
      * Strictly above every derived node it reads. Inputs are always 0. A governor output
      * reports its governor's height, since that is what its readers are ordered against.
      */
-    fun graphHeightOf(slot: Slot): Int = nodes[slot.id].let { (it.firewall ?: it).height }
+    fun graphHeightOf(slot: Slot): Int = node(slot).let { (it.firewall ?: it).height }
 
-    fun graphHeightOf(g: GovernorHandle): Int = nodes[g.id].height
+    fun graphHeightOf(g: GovernorHandle): Int = node(g).height
 
     /** The node's current dependencies, in the order they were last read. */
-    fun dependenciesOf(slot: Slot): List<Slot> = depsOf(nodes[slot.id])
+    fun dependenciesOf(slot: Slot): List<Slot> = depsOf(node(slot))
 
     /** What the governor read on its last solve, in read order. */
-    fun dependenciesOf(g: GovernorHandle): List<Slot> = depsOf(nodes[g.id])
+    fun dependenciesOf(g: GovernorHandle): List<Slot> = depsOf(node(g))
 
     private fun depsOf(n: Node): List<Slot> {
         val out = ArrayList<Slot>()
@@ -622,13 +766,13 @@ class Graph {
     /** The slots this governor computes. Order is unspecified. */
     fun claimsOf(g: GovernorHandle): List<Slot> {
         val out = ArrayList<Slot>()
-        var c = nodes[g.id].firstChild
+        var c = node(g).firstChild
         while (c != null) { out += c.slot; c = c.nextChild }
         return out
     }
 
     /** The name this slot was created with, if any. */
-    fun nameOf(slot: Slot): String? = nodes[slot.id].name
+    fun nameOf(slot: Slot): String? = node(slot).name
 
     /**
      * A label for the node currently being evaluated, or `null` outside a computation.
@@ -640,21 +784,28 @@ class Graph {
     fun evaluatingLabel(): String? = context?.let { it.name ?: it.slot.toString() }
 
     /** Whether this slot holds a reference rather than a `Double`. */
-    fun isRefNode(slot: Slot): Boolean = nodes[slot.id].isRef
+    fun isRefNode(slot: Slot): Boolean = node(slot).isRef
 
     /** The governor that computes this slot, or `null` if it is not governed. */
     fun governorOf(slot: Slot): GovernorHandle? =
-        nodes[slot.id].firewall?.let { GovernorHandle(it.slot.id) }
+        node(slot).firewall?.let { GovernorHandle(it.slot.bits) }
 
     /** The nodes that currently read this one. Order is unspecified. */
     fun subscribersOf(slot: Slot): List<Slot> {
         val out = ArrayList<Slot>()
-        var l = nodes[slot.id].subs
+        var l = node(slot).subs
         while (l != null) { out += l.sub.slot; l = l.nextSub }
         return out
     }
 
-    val nodeCount: Int get() = nodes.size
+    /**
+     * Live nodes. Excludes disposed indices awaiting reuse, so a leak assertion — compose,
+     * churn a list, compose the same thing again — compares two numbers that should match.
+     */
+    val nodeCount: Int get() = nodes.size - freeIndices.size
+
+    /** Indices allocated, live or awaiting reuse. The high-water mark. */
+    val nodeCapacity: Int get() = nodes.size
 
     private fun checkThread() {
         check(Thread.currentThread() === owningThread) {

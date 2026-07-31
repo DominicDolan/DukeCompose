@@ -1,5 +1,6 @@
 package com.dubulduke.dsl
 
+import com.dubulduke.layout.Direction
 import com.dubulduke.layout.Element
 import com.dubulduke.layout.ElementBuilder
 import com.dubulduke.layout.ElementTree
@@ -56,6 +57,12 @@ class ElementScope<S : Any> internal constructor(
      * so overriding one slot is ordinary last-write-wins (§2.4).
      */
     private val inherited: (LayoutScope.() -> Unit)?,
+    /**
+     * An axis this element does not own — set only for a flex item, whose main axis the row writes.
+     * Reserved *before* [inherited] runs, so a container default aimed at that axis is dropped
+     * rather than fighting the row.
+     */
+    private val reserved: Direction? = null,
 ) {
     @JvmField
     val element: Element = builder.element
@@ -74,8 +81,12 @@ class ElementScope<S : Any> internal constructor(
     private fun scope(): LayoutScope =
         layoutScope ?: LayoutScope(graph, tree, element).also {
             layoutScope = it
+            if (reserved != null) it.reserve(reserved == Direction.HORIZONTAL)
             inherited?.let { d -> it.applyDefaults(d) }
         }
+
+    /** The scope, forced into existence. For a flex item, whose size expression needs it. */
+    internal fun layoutScope(): LayoutScope = scope()
 
     /**
      * Position and size this element.
@@ -92,6 +103,19 @@ class ElementScope<S : Any> internal constructor(
     /** Give this element measurable text. Font and text are framework-owned, never style (§4.5). */
     fun text(text: String, font: FontRef) {
         builder.text(text, font)
+    }
+
+    /**
+     * Text computed from the graph — a string that can change without recomposition.
+     *
+     * The distinction is invisible while composition runs every frame and decisive once it does
+     * not (`dsl-and-engine.md` §5.5): `text("Score: ${'$'}score", font)` freezes the string at
+     * setup, and inside a [forEach] item it freezes at whatever the item held when it first
+     * appeared. Costs nothing when the inputs are still — the node compares by value, so an
+     * interpolation rebuilding an equal string re-triggers no measurement.
+     */
+    fun text(font: FontRef, text: () -> String) {
+        builder.text(font) { text() }
     }
 
     /**
@@ -144,7 +168,10 @@ class ElementScope<S : Any> internal constructor(
         // registration has to happen *inside* the block — capturing the builder for later would
         // hand back an axis with nothing on it.
         val s = scope()
-        builder.h { s.commitAxis(horizontal = true, axis = this) }
+        // A reserved axis was already built by the flex row, before this element's block ran.
+        // Building it again would hit `:layout`'s "already has an axis" check.
+        if (!s.isReserved(horizontal = true)) builder.h { s.commitAxis(horizontal = true, axis = this) }
+        if (s.isReserved(horizontal = false)) return
         // `startIsLow = false` on the vertical axis is what makes `top` the origin rather than the
         // end — i.e. y-down, so `top { 0.0 }` is the top of the screen and a list stacks downwards
         // by adding. `:layout` supports either orientation; the DSL picks one and states it, since

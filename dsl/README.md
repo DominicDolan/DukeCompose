@@ -66,6 +66,87 @@ Remove one.
 Under-constrained is an error too, for the reason §2.1 gives: a slot defaulted to zero produces a
 plausible-looking layout with the element in the wrong place.
 
+## Flex rows
+
+```kotlin
+flexRow(gap = 8.0) {
+    layout { fillWidth(12.0); height { 48.0 } }
+    style { colour = ROW }
+
+    fixed({ 28.0 })                       // an icon, its own width
+    grow(1.0) { text("one share", font) } // and these split what is left, 1:2
+    grow(2.0) { text("two shares", font) }
+}
+```
+
+An item's main axis is **reserved**, not merely defaulted: both its position and its size belong to
+the row, so its `layout { }` block supplies the cross axis only and `width { }` inside a horizontal
+row's item is an error naming the row. That's a third precedence level above the two above, and a
+different kind — not "the container yields to the author" but "the author has no say here". Defaults
+aimed at a reserved axis are dropped silently, so a `flexRow` nests inside a `column` without the
+column's `left`/`right` stamping fighting it.
+
+The cross axis *is* an ordinary default (`top` + `bottom`, so an item fills the row), which has one
+consequence worth stating: **a row's cross size must not come from its items.** `height { children.maxOf { it.height } }`
+on a horizontal flex row is a real self-cycle, because the children's heights come from the row's.
+The same is true of the main axis for a different reason — the pool reads the container's own
+main-axis size, so a flex row inside a shrink-to-fit container is `layout-design.md` §7.3's governed
+case, not this one.
+
+`gap` is charged to the pool as fixed-size spacer *elements*. The row owns each item's main-axis
+origin and chains it off the previous item's end, so there is nowhere else for a gap to live.
+
+`clamped = true` switches to the governed solve, which `min`/`max` on an item require, and it is an
+explicit argument rather than something inferred: a governed item's size slot has to be created as a
+claimable input *while the item is being built*, and whether any clamp exists is not known until
+every item has been.
+
+## Structural change — `forEach`
+
+```kotlin
+column(gap = 8.0, id = "list") {
+    layout { fillWidth(12.0); height { children.last.bottom - top + 12.0 } }
+
+    forEach({ model.messages }, key = { it.id }) { item ->
+        stackAcross(gap = 8.0)                     // the item *is* the row
+        layout { height { 40.0 } }
+        label({ item.value.title }, font)          // note the lambda
+    }
+}
+```
+
+`compose` still runs **once**. A `forEach` region is the only place composition may run again, and
+only for the items whose keys actually moved. `layout-design.md` Q10 left three options open; this
+is the third. Per-frame composition — DukeUI's answer — re-registers every slot expression on every
+element whether or not anything moved, which is O(tree) every frame in a design whose premise is
+O(changed). Everything else compose-once needs was already paid for: stylers are retained lambdas,
+click handlers are retained, and text can be a derived node. Structure was the last thing left.
+
+**A surviving key is not rebuilt.** Its subtree, its memoised values and its dependency edges all
+persist. That is the point of matching by key rather than by position: inserting at the head of a
+positionally-matched list re-associates every element with the wrong data and discards everything
+below it.
+
+**And so its body does not re-run** — the one sharp edge. Anything about the item that can change
+must be read through `item.value` *inside an expression*: `label(item.value.title, font)` freezes the
+title at build time, `label({ item.value.title }, font)` tracks it. Same rule as everywhere else in
+this design, applied per item instead of per frame.
+
+A `forEach` item is an element you did not create, so `row(gap) { }` — which makes a *child* a
+container — is the wrong tool: it would wrap every item in a second element. `stackAcross(gap)` and
+`stackDown(gap)` apply the same defaults to the current element instead, and `row`/`column` are now
+literally `child { stackAcross(gap); … }`.
+
+An element's children come either from its own block or from `forEach`, never both. The list lambda
+runs once per frame, so it should return the same instance when nothing changed — that hits an
+identity check before a single key is examined. A frame where nothing changed costs zero recomputes
+and zero marks; there is a test asserting exactly that over 100 reconciles.
+
+Underneath, `:reactivity` gained `dispose`, which recycles node indices — otherwise a churning list
+grows the graph forever. Recycling means a stale `Slot` could address somebody else's node, so
+`Slot` now packs an 8-bit generation and a disposed handle fails loudly instead of returning a
+plausible wrong number.
+
 ## Signals — no `graph.read` at the call site
 
 ```kotlin
@@ -90,6 +171,35 @@ lambdas, and it is the one rule this convenience does not remove.
 `refSignal` is the same for non-numbers, defaulting to `EQUALS` comparison — a caption rebuilt by
 interpolation is a fresh string with equal content, and under identity every rebuild would
 re-trigger measurement, the most expensive input the layout graph has.
+
+## `DukeApp` — one class per platform
+
+```kotlin
+class MyUI : DukeApp<MyStyle, MyRenderer>(StyleFactory { MyStyle() }, MyTextMetrics()) {
+    override val window get() = Window(0.0, 0.0, screenW, screenH)
+    override val viewport get() = Viewport(0.0, 0.0, screenW, screenH)
+
+    override fun drawBox(node: NodeView<MyStyle>, renderer: MyRenderer) { … }
+    override fun drawText(node: NodeView<MyStyle>, text: String, renderer: MyRenderer) { … }
+}
+```
+
+Four members. `compose` / `update` / `draw`, the graph, the element tree, the pointer, `signal`, and
+`viewportWidth` / `viewportHeight` — already tracking `viewport`, magnitude only, so a y-up host's
+negative extent never reaches a `height { }` expression — all come with it.
+
+The reasoning is that an integration is four things, of which only two contain a platform-specific
+decision. Making each platform assemble the graph and the tree is asking it to repeat work it cannot
+get interestingly right or wrong.
+
+`DukeHost` and `DukeBackend` stay separate interfaces in `:layout`, and that is not tidiness:
+`DukeHost` is what `tree.draw(host, …)` *takes*, so a host that owned a tree would be circular, and
+`:layout`'s tests build trees with no host at all — the property that lets layout be tested without
+a renderer. `DukeApp` merely implements both, because a platform that supplies one nearly always
+supplies the other. Anything that wants them apart still calls `tree.draw(host, backend, renderer)`.
+
+`compose` syncs the viewport before running the body, so a size read *at composition time* — rather
+than inside a slot lambda — sees the real number rather than the zero the inputs were created with.
 
 ## Style is a type parameter
 
@@ -148,11 +258,6 @@ defensible, so this layer picks one and says so.
 
 ## What is not here yet
 
-- **Reconciliation.** `compose` builds once. Structural change — a list whose length varies — needs
-  keyed matching and a mutable `Element.index` (`layout-design.md` Q10). Values change through
-  graph inputs, which is what makes compose-once useful rather than limiting.
-- **Flex containers.** `:layout`'s `flexRow` works but has no DSL wrapper yet; §3.3 puts
-  `FlexScope` alongside `ColumnScope` and `RowScope`, including installing the governor.
 - **Style classes and contextual styling** (§4.1–4.3). `style { }` is per element today.
 
 ## Running

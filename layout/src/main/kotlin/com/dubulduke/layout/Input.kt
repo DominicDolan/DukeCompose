@@ -194,6 +194,15 @@ class Pointer(private val tree: ElementTree) {
      */
     fun update(x: Double, y: Double, down: Boolean) {
         val g = tree.graph
+
+        // The element under the pointer last frame may have been reconciled away since — a list
+        // row removed by its own click handler is the standing case, and it is the *usual* one
+        // rather than an edge case, because the thing you click is often the thing that goes.
+        // Forgetting it must not go through the graph: its nodes are gone, and clearing hover on
+        // a disposed element is how a stale handle reaches `setInput`.
+        if (hovered?.disposed == true) hovered = null
+        if (pressed?.disposed == true) pressed = null
+
         val hit = tree.hitTest(x, y)
 
         if (hit !== hovered) {

@@ -110,6 +110,23 @@ g.read(width)                        // does not re-measure
   marks and recomputes are expected to differ by an order of magnitude and only the second
   benefits from `CHECK`.
 
+## Disposal
+
+`dispose(slot)` destroys a node, recycles its index, and wakes everything that read it. Three
+steps in a fixed order: subscribers are marked `DIRTY` (their answers came from something that no
+longer exists), every edge is cut in *both* directions (a leftover link would let a recycled node
+mark a stranger), and the index goes on the free list with the generation bumped.
+
+Index recycling is what keeps a churning UI bounded — without it a list that replaces its items
+every second grows the node array forever. It also means a stale handle could address somebody
+else's node, so `Slot` packs a 24-bit index and an 8-bit generation, and a disposed handle raises
+a named error rather than returning a plausible wrong number. That is one compare on the read
+path, and the honest limit is that the tag wraps after 256 reuses of one index.
+
+Disposing a governor releases its claims; disposing a *claimed output* on its own is refused.
+`nodeCount` excludes freed indices, so "churn a list and come back to where you started" is a
+one-line assertion.
+
 ## Not implemented yet
 
 In rough order of intended work:
@@ -121,10 +138,12 @@ In rough order of intended work:
    because the two `read` calls happen at the read site, which is where the dependency
    precision comes from.
 2. **`reserve` / `define`** — splitting node creation from node definition, so a node can be
-   named before its computation exists. Needed for recomposition to update a computation in
-   place rather than orphaning its edges, and it is also what eager slot-handle capture would
-   need. Tracked as `layout-design.md` Q11; not yet decided, so the tests currently thread a
-   `var slot = Slot(-1)` placeholder where they need a forward reference.
+   named before its computation exists. Q11 wanted this for two reasons; the first has since
+   evaporated. Recomposition does *not* need to re-point a computation in place, because
+   reconciliation matches by key and simply **does not re-run** a surviving item's body
+   (`layout-design.md` Q10) — the edges are never orphaned because they are never rebuilt. What
+   remains is eager slot-handle capture, which nothing needs yet, so the tests still thread a
+   `var slot = Slot(-1)` placeholder where they want a forward reference.
 3. **The height heap** — ordered eager execution. Only needed if something other than the
    draw walk has to be driven from the graph.
 4. **Struct-of-arrays** — a cache-locality optimisation, not a GC one; the evaluator already
