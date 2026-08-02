@@ -131,6 +131,37 @@ class NodeView<S> internal constructor(
 }
 
 /**
+ * A clip region in **window** coordinates, always normalised so `min <= max` on both axes.
+ *
+ * Normalised deliberately. Every other window-space number this file produces is signed, because
+ * a mirrored axis is the mechanism rather than an edge case — but a scissor rectangle with a
+ * negative extent is not a rectangle pointing the other way, it is an error. Whatever sign
+ * juggling the viewport implies is finished before a backend sees this.
+ */
+data class ClipRect(val minX: Double, val minY: Double, val maxX: Double, val maxY: Double) {
+
+    /** True when the rectangle encloses no pixels — everything under it is invisible. */
+    val isEmpty: Boolean get() = minX >= maxX || minY >= maxY
+
+    val width: Double get() = maxX - minX
+    val height: Double get() = maxY - minY
+
+    /** The overlap of two clips. Nested clipping is intersection, which is why this is all it takes. */
+    fun intersect(other: ClipRect): ClipRect = ClipRect(
+        maxOf(minX, other.minX),
+        maxOf(minY, other.minY),
+        minOf(maxX, other.maxX),
+        minOf(maxY, other.maxY),
+    )
+
+    fun overlaps(x0: Double, y0: Double, x1: Double, y1: Double): Boolean =
+        x1 > minX && x0 < maxX && y1 > minY && y0 < maxY
+
+    fun contains(x: Double, y: Double): Boolean =
+        x >= minX && x <= maxX && y >= minY && y <= maxY
+}
+
+/**
  * Drawing, and nothing else.
  *
  * Generic in the renderer `R` rather than one non-generic `renderElement`, because the interface
@@ -149,6 +180,24 @@ interface DukeBackend<S, R> {
 
     /** Anything the application named with `kind(...)`. Ignored by default. */
     fun drawCustom(node: NodeView<S>, kind: String, renderer: R) {}
+
+    /**
+     * Restrict drawing to [clip] until the matching [popClip]. Calls nest.
+     *
+     * **Default is a no-op, and that is a considered default rather than an oversight.** The draw
+     * walk culls every element that falls entirely outside the current clip regardless of what the
+     * backend does, so a backend that implements neither method still gets whole elements clipped
+     * — a scrolled list does not paint its off-screen rows. What it does not get is the partial
+     * row at the boundary, which is a pixel-accuracy failure rather than a correctness one, and
+     * which no amount of tree walking can fix because it is a rasterisation concern.
+     *
+     * That split is why this is not abstract: making it so would force every backend and every
+     * test double to answer a question most of them do not have.
+     */
+    fun pushClip(clip: ClipRect, renderer: R) {}
+
+    /** Undo the most recent [pushClip]. */
+    fun popClip(renderer: R) {}
 }
 
 /**
@@ -161,6 +210,18 @@ interface DukeBackend<S, R> {
  * Reading geometry *evaluates* it, so this doubles as "lay out the tree" exactly as
  * [dumpJson] does. Calling it on a settled graph costs a few branches per slot and recomputes
  * nothing; there is no separate layout pass to forget.
+ *
+ * ### Culling
+ *
+ * An element outside the current clip is not drawn. Its **children are still walked**, and that
+ * asymmetry is deliberate: nothing constrains a child to its parent's box, so a child of an
+ * invisible parent may well be visible — the same reason [hitTest] rejects the equivalent
+ * optimisation.
+ *
+ * The exception is a *clipping* element, whose subtree genuinely cannot escape it, so an
+ * off-screen one is skipped whole. That is what makes a long scrolled list cheap to draw, and it
+ * is worth being precise about what it does not do: the rows are still **laid out**, because their
+ * slots are live graph nodes that other things read. This is draw culling, not virtualisation.
  */
 fun <S, R> ElementTree.draw(
     host: DukeHost,
@@ -184,16 +245,38 @@ fun <S, R> ElementTree.draw(
 
     val view = NodeView<S>(this, widthScale, heightScale, xAdjust, yAdjust)
 
-    fun rec(e: Element) {
+    fun rec(e: Element, clip: ClipRect?) {
         view.moveTo(e)
-        // Dispatch on kind, not on the presence of content, so that `kind("button")` on a text
-        // element reaches drawCustom and can decide for itself what to do with the text.
-        when (e.kind) {
-            "text" -> backend.drawText(view, graph.textOf(e.content!!), renderer)
-            "box" -> backend.drawBox(view, renderer)
-            else -> backend.drawCustom(view, e.kind, renderer)
+        val x0 = view.minX
+        val y0 = view.minY
+        val x1 = view.maxX
+        val y1 = view.maxY
+
+        // The element's own box, intersected with whatever encloses it. Computed before the
+        // visibility test because a clipping element that is entirely outside its parent's clip
+        // yields an empty rect, and that single check retires the whole subtree.
+        val inner = if (!e.clips) clip else {
+            val own = ClipRect(x0, y0, x1, y1)
+            (clip?.intersect(own) ?: own).also { if (it.isEmpty) return }
         }
-        for (c in e.children) rec(c)
+
+        if (clip == null || clip.overlaps(x0, y0, x1, y1)) {
+            // Dispatch on kind, not on the presence of content, so that `kind("button")` on a text
+            // element reaches drawCustom and can decide for itself what to do with the text.
+            when (e.kind) {
+                "text" -> backend.drawText(view, graph.textOf(e.content!!), renderer)
+                "box" -> backend.drawBox(view, renderer)
+                else -> backend.drawCustom(view, e.kind, renderer)
+            }
+        }
+
+        val children = e.children
+        if (children.isEmpty()) return
+        // Pushed only around the children: an element draws its own background in its parent's
+        // clip, not its own, which is what makes a clipping panel able to paint its border.
+        if (e.clips) backend.pushClip(inner!!, renderer)
+        for (c in children) rec(c, inner)
+        if (e.clips) backend.popClip(renderer)
     }
-    rec(from)
+    rec(from, null)
 }

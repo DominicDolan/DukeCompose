@@ -140,10 +140,14 @@ abstract class DukeApp<S : Any, R>(
      *
      * [pointerX] and [pointerY] are in the host's **window** coordinates, the same space [window]
      * is expressed in; the viewport transform is applied for you.
+     *
+     * [wheel] is this frame's wheel movement, positive upwards, in notches — zero on the vast
+     * majority of frames. It is dispatched after the click, bubbling from the element under the
+     * pointer to the nearest ancestor that handles it (`scrollArea` being the usual one).
      */
-    fun update(pointerX: Double, pointerY: Double, pressed: Boolean) {
+    fun update(pointerX: Double, pointerY: Double, pressed: Boolean, wheel: Double = 0.0) {
         if (isComposed) {
-            pointer.update(this, pointerX, pointerY, pressed)
+            pointer.update(this, pointerX, pointerY, pressed, wheel)
             reconcile()
         }
         syncViewport()
@@ -184,7 +188,15 @@ abstract class DukeApp<S : Any, R>(
      * There is no separate layout pass to forget: reading geometry evaluates it, so the walk *is*
      * the layout driver, and a settled frame costs a few branches per slot.
      */
-    fun draw(renderer: R) {
+    /**
+     * `open` so a platform can bracket the walk with state it has to restore.
+     *
+     * A backend that pushes global renderer state — a scissor rectangle being the standing case —
+     * balances it inside the walk, but leaving that as the *only* guarantee makes an exception
+     * thrown mid-draw corrupt the state of everything drawn afterwards. An override calling
+     * `super.draw(renderer)` and then clearing is the intended shape.
+     */
+    open fun draw(renderer: R) {
         if (!isComposed) return
         tree.draw(this, this, renderer)
     }

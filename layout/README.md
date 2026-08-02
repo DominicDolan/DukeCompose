@@ -463,15 +463,48 @@ that caused it.
 
 `layout-design.md` Q10, settled.
 
+## Clipping
+
+`clip()` confines an element's subtree to its own box when drawn and hit-tested. It is **not a
+layout input**: a clipped child's slots resolve to exactly the numbers they would have without it,
+and it is simply not shown. Making clipping participate in sizing is how CSS ended up with
+`overflow` affecting layout.
+
+Two consequences, both load-bearing:
+
+- **`hitTest` rejects the point at every clipping ancestor.** Without it a scrolled-away row still
+  answers the pointer, and clicks land on rows that are not on screen. Nesting needs no rectangle
+  threaded through the walk — one early return per clipping ancestor *is* the intersection of all
+  of them.
+- **`draw` culls whatever falls outside the current clip**, and skips a clipping element's whole
+  subtree when the element itself is outside, because that subtree provably cannot escape it. A
+  non-clipping element gets no such shortcut: nothing constrains a child to its parent's box, so
+  a child of an off-screen parent may well be visible.
+
+That second rule is draw culling, not virtualisation — the off-screen rows are still *laid out*,
+because their slots are live nodes other things read.
+
+`DukeBackend.pushClip` / `popClip` receive a `ClipRect` in window coordinates, already intersected
+with every enclosing clip and normalised so `min <= max` — every other window-space number here is
+signed, but a scissor rectangle with a negative extent is an error rather than a rectangle pointing
+the other way. Both default to no-ops: culling already removes whole elements without the backend's
+help, so a backend that implements neither still clips lists, losing only the partial element at
+the boundary.
+
+`onScroll` is the one event that **bubbles**, from the hovered element up to the nearest ancestor
+that handles it. Clicks must not — the topmost thing under the pointer is what makes a button a
+button — but the pointer is over a row far more often than over the list, so a wheel that stopped
+at the first interactive element would make scrolling fail wherever the content is densest.
+
 ## What is not here yet
 
 - **Flex-shrink inside a shrink-to-fit container.** `clamped = true` reads the container's own
   main-axis size as an outer input, so a clamped row whose container is sized *by these children*
   is still a genuine cycle. Closing it means letting the governor claim the container's size too —
   the mechanism allows it, no container drives it yet.
-- **Keyboard focus, pointer capture and scroll.** `Pointer` handles hover, press and click.
+- **Keyboard focus and pointer capture.** `Pointer` handles hover, press, click and the wheel.
   Focus is application state — another input node — and routes without hit testing; drag needs
-  capture overriding the hit test; scroll containers need a clip region the hit test respects.
+  capture overriding the hit test, so that leaving a slider's box mid-drag keeps moving it.
 
 All three of the plan's go/no-go points — steps 3, 4 and 6 — now pass. Step 3 is covered by
 `ElementTreeTest`: a 500-row list chained through `prev`, and a shrink-wrap panel

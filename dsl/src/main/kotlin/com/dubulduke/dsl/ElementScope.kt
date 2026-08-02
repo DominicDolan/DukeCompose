@@ -7,6 +7,7 @@ import com.dubulduke.layout.ElementTree
 import com.dubulduke.layout.FontRef
 import com.dubulduke.layout.interactive
 import com.dubulduke.layout.onClick
+import com.dubulduke.layout.onScroll
 import com.dubulduke.layout.style
 import com.dubulduke.reactivity.Graph
 
@@ -148,6 +149,26 @@ class ElementScope<S : Any> internal constructor(
     /** Register a click handler. Retained rather than polled, so it works under compose-once. */
     fun onClick(handler: () -> Unit) {
         builder.onClick(handler)
+    }
+
+    /**
+     * Register a wheel handler. Bubbles — see [com.dubulduke.layout.Element.onScroll].
+     *
+     * Unlike [onClick] this does not imply [interactive], because the handler is normally reached
+     * from a descendant rather than from this element itself.
+     */
+    fun onScroll(handler: (Double) -> Unit) {
+        builder.onScroll(handler)
+    }
+
+    /**
+     * Confine this element's children to its box when drawn and hit-tested.
+     *
+     * Affects no slot: a clipped child lands exactly where its expressions put it and is simply
+     * not shown. For the usual case — clipping plus an offset — use [scrollArea].
+     */
+    fun clip() {
+        builder.clip()
     }
 
     /**

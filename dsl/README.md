@@ -147,6 +147,52 @@ grows the graph forever. Recycling means a stale `Slot` could address somebody e
 `Slot` now packs an 8-bit generation and a disposed handle fails loudly instead of returning a
 plausible wrong number.
 
+## Scrolling — `scrollArea`
+
+```kotlin
+scrollArea(id = "inbox", speed = 30.0) {
+    layout { fillWidth(12.0); top { 16.0 }; height { 340.0 } }
+    style { color.set(PANEL) }
+
+    content(gap = 8.0) {
+        forEach({ rows }, key = { it.id }) { item -> … }
+    }
+}
+```
+
+**There is no scrolling mechanism.** Scrolling is two things this design already had: an element
+that clips its subtree, and a content origin that reads a signal. No transform stack, no
+scroll-specific path through layout, and nothing in `:reactivity` knows the feature exists. A
+scrolled row's slots resolve to the same numbers they always did, offset by a signal like any other
+expression reading any other input.
+
+That falls out rather than being arranged, and the reason is `layout-design.md` §4.4: a slot holds
+an *expression*, so "everything below here moves by −n" is an ordinary read. Retained-mode UIs that
+store resolved rectangles have to add scrolling as a traversal-time transform precisely because
+they cannot say that.
+
+Two elements are involved — the viewport is placed by its container and clips; the content is
+placed by the offset and is as tall as its children — so `layout` and `style` in the block mean the
+**viewport**, and everything about the content goes inside `content { }`.
+
+### The clamp is the only interesting part
+
+The offset must not exceed `content height − viewport height`, and that lives in the graph. Putting
+the clamp *into the offset expression* is the obvious move and a genuine cycle: content height
+depends on the children, whose positions depend on the content origin, which would then depend on
+the content height.
+
+So the clamp happens **where the value is written**, reading the previous frame's geometry
+untracked — the same resolution as previous-frame hit testing, sound for the same reason. Content
+can also shrink with nobody touching the wheel (deleting the last row while scrolled to the bottom),
+so it additionally runs once a frame as a `Region`. Regions exist for reconciliation, but their
+phase is exactly right: after input, before anything measures. Registering after the body means a
+`forEach` inside the area reconciles first, so the clamp sees this frame's rows rather than last
+frame's.
+
+`scroll` is exposed as a `Signal`, so scroll-to-top on a filter change or an animated scroll are
+ordinary writes.
+
 ## Signals — no `graph.read` at the call site
 
 ```kotlin

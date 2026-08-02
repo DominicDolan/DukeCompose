@@ -346,6 +346,17 @@ class ElementBuilder internal constructor(
         element.kind = kind
     }
 
+    /**
+     * Confine this element's subtree to its own box when drawing and hit testing.
+     *
+     * Affects no slot — see [Element.clips]. Costs nothing on elements that do not set it: the
+     * draw walk carries a null clip until the first clipping element, and the hit test gains one
+     * branch per element.
+     */
+    fun clip() {
+        element.clips = true
+    }
+
     /** Append a child and build it. Returns it, for the cases that want to hold a reference. */
     fun child(id: String? = null, key: Any? = null, build: ElementBuilder.() -> Unit): Element {
         val e = tree.newElement(element, element.childList.size, id, key)

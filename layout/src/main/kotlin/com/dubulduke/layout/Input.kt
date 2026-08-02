@@ -85,6 +85,19 @@ fun ElementBuilder.onClick(handler: () -> Unit) {
     element.onClick = handler
 }
 
+/**
+ * Register a wheel handler. The argument is the wheel delta, positive for scrolling up.
+ *
+ * **Does not make the element interactive**, unlike [onClick], and the difference is the point.
+ * Wheel events bubble (see [Element.onScroll]), so the handler fires for the pointer being over
+ * anything *inside* this element — which is the normal case, since the pointer is over a row far
+ * more often than over the list. A scroll container still usually wants [interactive] as well, so
+ * that the wheel works over its empty background too, but that is its choice rather than implied.
+ */
+fun ElementBuilder.onScroll(handler: (Double) -> Unit) {
+    element.onScroll = handler
+}
+
 /** True while the pointer is over this element. A tracked read — use it in layout or style. */
 fun Graph.isHovered(e: Element): Boolean =
     e.interaction?.let { read(it.hoveredSlot) != 0.0 } ?: false
@@ -104,9 +117,19 @@ fun Graph.isPressed(e: Element): Boolean =
  * is ordinary rather than pathological. O(n) per frame, and n is the element count, not the node
  * count — at the sizes where that matters the read walk costs far more.
  *
+ * A **clipping** element is the one case where that rejection is sound, because its subtree cannot
+ * escape it by construction. Nested clips then need no rectangle threaded through the walk: one
+ * early return per clipping ancestor is exactly the intersection of all of them, which is the same
+ * observation [draw] makes and a cheaper way to spend it.
+ *
  * Untracked, like every other read outside the graph.
  */
 fun ElementTree.hitTest(x: Double, y: Double, from: Element = root): Element? {
+    // Outside a clip, nothing beneath it is visible, so nothing beneath it is clickable. Without
+    // this a scrolled-away row still answers the pointer — clicks landing on rows that are not on
+    // screen, which is the bug that makes clipping feel broken rather than merely unclipped.
+    if (from.clips && !contains(from, x, y)) return null
+
     val children = from.children
     for (i in children.indices.reversed()) {
         hitTest(x, y, children[i])?.let { return it }
@@ -175,7 +198,13 @@ class Pointer(private val tree: ElementTree) {
      * converted into window space, which is both cheaper and keeps the y-flip in exactly one place
      * per direction.
      */
-    fun update(host: DukeHost, windowX: Double, windowY: Double, down: Boolean) {
+    fun update(
+        host: DukeHost,
+        windowX: Double,
+        windowY: Double,
+        down: Boolean,
+        wheel: Double = 0.0,
+    ) {
         val w = host.window
         val v = host.viewport
         require(v.width != 0.0 && v.height != 0.0) { "the viewport has a zero extent ($v)" }
@@ -183,7 +212,7 @@ class Pointer(private val tree: ElementTree) {
         val heightScale = w.height / v.height
         val xAdjust = w.x - widthScale * v.x + if (widthScale < 0.0) w.width else 0.0
         val yAdjust = w.y - heightScale * v.y + if (heightScale < 0.0) w.height else 0.0
-        update((windowX - xAdjust) / widthScale, (windowY - yAdjust) / heightScale, down)
+        update((windowX - xAdjust) / widthScale, (windowY - yAdjust) / heightScale, down, wheel)
     }
 
     /**
@@ -192,7 +221,7 @@ class Pointer(private val tree: ElementTree) {
      * Writing an unchanged input is free — the graph compares before it marks — so the common case
      * of a still pointer over a still UI costs one hit test and no invalidation at all.
      */
-    fun update(x: Double, y: Double, down: Boolean) {
+    fun update(x: Double, y: Double, down: Boolean, wheel: Double = 0.0) {
         val g = tree.graph
 
         // The element under the pointer last frame may have been reconciled away since — a list
@@ -227,6 +256,31 @@ class Pointer(private val tree: ElementTree) {
             if (target != null && target === hit) target.onClick?.invoke()
         }
         wasDown = down
+
+        if (wheel != 0.0) dispatchWheel(hit, wheel)
+    }
+
+    /**
+     * Walk up from the hit element to the first ancestor that handles the wheel.
+     *
+     * Stops at the first handler rather than notifying all of them, so a scroll area nested in
+     * another scrolls the inner one and leaves the outer alone — which is what every scrolling UI
+     * does, and the reason is that the alternative moves two things at once for one gesture.
+     *
+     * Starts from the hit rather than from [hovered] so that a wheel event arriving on the same
+     * frame the pointer moved uses this frame's target. They are the same object here; naming the
+     * local makes it not depend on the assignment order above.
+     */
+    private fun dispatchWheel(hit: Element?, wheel: Double) {
+        var e = hit
+        while (e != null) {
+            val handler = e.onScroll
+            if (handler != null) {
+                handler(wheel)
+                return
+            }
+            e = e.parent
+        }
     }
 
     private fun noteFlip(from: Element?, to: Element?) {

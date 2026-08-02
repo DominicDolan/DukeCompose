@@ -122,6 +122,34 @@ class Element internal constructor(
         internal set
 
     /**
+     * Whether this element confines its subtree to its own box when drawn and hit-tested.
+     *
+     * A plain flag rather than a graph node, and that is the point: clipping is not a layout
+     * input. A clipped child's slots resolve to exactly the same numbers whether or not the
+     * clip exists — it is out of the box, it just cannot be seen. Making clipping affect
+     * layout is how CSS ended up with `overflow` participating in sizing.
+     *
+     * The consequence worth stating: **a clip is not a scroll**. Offsetting the content is
+     * ordinary layout — a signal read by the content's origin — and this flag is only what
+     * stops the overflow being drawn. See `:dsl`'s `scrollArea`, which is the two together.
+     */
+    var clips: Boolean = false
+        internal set
+
+    /**
+     * Retained wheel handler, or `null`. Dispatched by [Pointer], **bubbling** from the hovered
+     * element up through its ancestors.
+     *
+     * Bubbling here and nowhere else, deliberately. A click means the topmost thing under the
+     * pointer and nothing above it — that is what makes a button inside a panel a button. A
+     * wheel means the nearest thing that *can* scroll, because the pointer is almost always
+     * over a row rather than over the list, and a row that swallowed the wheel because it
+     * happened to be interactive would make scrolling stop wherever the content is densest.
+     */
+    var onScroll: ((Double) -> Unit)? = null
+        internal set
+
+    /**
      * Retained click handler, or `null`. Registered during composition and dispatched by [Pointer].
      *
      * Retained rather than polled, which is a coupling worth naming: a polled `if (isHovering &&
