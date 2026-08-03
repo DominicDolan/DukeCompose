@@ -516,6 +516,43 @@ that handles it. Clicks must not — the topmost thing under the pointer is what
 button — but the pointer is over a row far more often than over the list, so a wheel that stopped
 at the first interactive element would make scrolling fail wherever the content is densest.
 
+## Flex-shrink, and the row that sizes itself
+
+`clamped = true` divides a pool, so its solve reads `sizeOf(container)` — which fails exactly when
+the container is sized *by* these children. That is not an exotic case: a toolbar as wide as its
+buttons that compresses them when the window narrows is the commonest shrink-wrapped layout there
+is, and it is a real cycle (container ← children ← governor ← container), not a false one.
+
+`shrinkToFit` inverts the solve. The row's own main size becomes an **output**:
+
+```kotlin
+flexRow(shrinkToFit = { parent.width - 24.0 }) {
+    layout { left { parent.left }; top { 0.0 }; height { 40.0 } }   // no width — see below
+    shrinkable({ 120.0 }, id = "file")
+    shrinkable({ 200.0 }, shrink = 2.0, min = { 60.0 })
+    fixed({ 24.0 })                                                 // not negotiable
+}
+```
+
+The fix is the **same move that made flex-grow acyclic, applied one level up**. Rather than the
+governor reading the container, it writes a `contentSize` node the container reads, and takes its
+bound from an expression the author supplies. Nothing reads the container's main size during the
+solve, so there is no loop to break. There is a test asserting no cycle is reported, and another
+asserting the naive formulation genuinely does cycle — so the hoist is shown to fix something.
+
+The shrink factor is **scaled by the basis**, as the flexbox spec has it. Weighting by the factor
+alone takes the same *absolute* amount from each item, so a narrow one reaches zero while a wide one
+is barely touched, and the result looks nothing like proportional compression.
+
+An item that would fall below its `min` freezes there and its share of the overflow passes to
+whatever can still give — the same freeze-and-loop as the clamped path, terminating for the same
+reason. If everything freezes, the row reports its **honest** oversize rather than the bound: a
+visibly too-wide row is a bug the author can see, where silently clipping hides it.
+
+Writing `width { }` on such a row is an error, not a silent override. That needed a *size-only*
+reservation, narrower than the one flex items get: an item surrenders both position and size to its
+row, while a shrink-to-fit row surrenders only its size and still has to be positioned.
+
 ## Keyboard focus
 
 `focusable()` makes an element a tab stop; `graph.isFocused(e)` is a tracked read like `isHovered`.
@@ -569,10 +606,6 @@ area or it could not be reused outside one.
 
 ## What is not here yet
 
-- **Flex-shrink inside a shrink-to-fit container.** `clamped = true` reads the container's own
-  main-axis size as an outer input, so a clamped row whose container is sized *by these children*
-  is still a genuine cycle. Closing it means letting the governor claim the container's size too —
-  the mechanism allows it, no container drives it yet.
 
 All three of the plan's go/no-go points — steps 3, 4 and 6 — now pass. Step 3 is covered by
 `ElementTreeTest`: a 500-row list chained through `prev`, and a shrink-wrap panel

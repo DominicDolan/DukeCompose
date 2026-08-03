@@ -1,6 +1,7 @@
 package com.dubulduke.dsl
 
 import com.dubulduke.layout.Direction
+import com.dubulduke.layout.Marker
 import com.dubulduke.layout.Element
 import com.dubulduke.reactivity.Computation
 import com.dubulduke.layout.FlexScope as LayoutFlexScope
@@ -56,14 +57,41 @@ fun <S : Any> ElementScope<S>.flexRow(
     direction: Direction = Direction.HORIZONTAL,
     gap: Double = 0.0,
     clamped: Boolean = false,
+    /**
+     * An outer bound on the row's main size, which makes the row **shrink to fit**.
+     *
+     * Supplying it flips the direction of the whole solve: the row becomes as large as its items
+     * want, up to this, and past it they compress — so its main-axis size is written for you and
+     * `width { }` on the row is an error. Items are declared with [FlexRowScope.shrinkable]; `grow`
+     * has no meaning, since there is no leftover pool to take a share of.
+     */
+    shrinkToFit: LayoutExpression? = null,
     id: String? = null,
     body: FlexRowScope<S>.() -> Unit,
 ): Element = child(id) {
     // Hoisted because @DukeDsl — correctly — refuses to resolve an ElementScope member against the
     // ElementBuilder receiver inside `layoutFlexRow`.
     val container = this
-    builder.layoutFlexRow(direction, clamped) {
+    val scope = container.layoutScope()
+    val bound = shrinkToFit?.let { e -> Computation { with(e) { scope.evaluate() } } }
+
+    // Before the body, so an author writing `width { }` on the row gets the message rather than a
+    // silent override — the size belongs to the solve from here on.
+    if (bound != null) scope.reserveSize(direction == Direction.HORIZONTAL)
+
+    val row = builder.layoutFlexRow(direction, clamped, bound) {
         FlexRowScope(container, this, direction, gap).body()
+    }
+
+    // The row's own main size is the solve's output, so it is written here rather than left to the
+    // author — and the axis is reserved so that writing it too is a named error rather than a
+    // silent second expression on a slot the governor already owns.
+    if (bound != null) {
+        val content = row.contentSize
+        // Written past the reservation, which is what the reservation is guarding *against* the
+        // author doing. `setReserved` says so at the call site rather than leaving a reader to
+        // wonder why this one assignment is allowed.
+        scope.setReservedSize(direction == Direction.HORIZONTAL) { graph.read(content) }
     }
 }
 
@@ -71,9 +99,10 @@ fun <S : Any> ElementScope<S>.flexRow(
 fun <S : Any> ElementScope<S>.flexColumn(
     gap: Double = 0.0,
     clamped: Boolean = false,
+    shrinkToFit: LayoutExpression? = null,
     id: String? = null,
     body: FlexRowScope<S>.() -> Unit,
-): Element = flexRow(Direction.VERTICAL, gap, clamped, id, body)
+): Element = flexRow(Direction.VERTICAL, gap, clamped, shrinkToFit, id, body)
 
 /**
  * The row itself, and its items.
@@ -119,6 +148,14 @@ class FlexRowScope<S : Any> internal constructor(
     fun interactive() = container.interactive()
     fun onClick(handler: () -> Unit) = container.onClick(handler)
 
+    /**
+     * How many items have been added, so [gapBefore] knows not to put a gap before the first.
+     *
+     * Spacers are deliberately **unnamed**. An id is a tree-wide binding for `query`, so numbering
+     * them per row — `gap1`, `gap2` — made two gapped rows in one tree a duplicate-id error, which
+     * is a real failure produced by nothing more than having two toolbars. Nothing queries a gap,
+     * and the element's path already identifies it in a dump.
+     */
     private var count = 0
 
     /**
@@ -136,6 +173,16 @@ class FlexRowScope<S : Any> internal constructor(
             { left { parent.left }; right { parent.right } }
         }
     }
+
+
+    /** Read an ambient in the row's own context. See [ElementScope.ambient]. */
+    fun <T> ambient(key: Ambient<T>): T = container.ambient(key)
+
+    /** Tag the row itself, for descendants' ancestor queries. */
+    fun marker(marker: Marker) = container.marker(marker)
+
+    /** Whether any ancestor of the row carries [marker]. */
+    fun hasAncestor(marker: Marker): Boolean = container.hasAncestor(marker)
 
     /** An item at a size of its own choosing. Subtracted from the pool the growing items share. */
     fun fixed(
@@ -167,14 +214,36 @@ class FlexRowScope<S : Any> internal constructor(
         return items.grow(flex, id, min?.let { item.mainSize(it) }, max?.let { item.mainSize(it) }, item.build(body))
     }
 
+    /**
+     * An item at its preferred size, which it gives up under pressure. Needs `shrinkToFit`.
+     *
+     * [basis] is what it would like to be. [shrink] is how willingly it yields — weighted by the
+     * basis, as the flexbox spec does, so a wide item and a narrow one with equal factors do not
+     * lose the same *absolute* amount. `shrink = 0.0` makes it incompressible; [min] is a floor it
+     * freezes at, its share of the overflow passing to whatever can still give.
+     */
+    fun shrinkable(
+        basis: LayoutExpression,
+        shrink: Double = 1.0,
+        id: String? = null,
+        min: LayoutExpression? = null,
+        body: ElementScope<S>.() -> Unit = {},
+    ): Element {
+        gapBefore()
+        val item = Item()
+        return items.shrinkable(
+            item.mainSize(basis), shrink, id, min?.let { item.mainSize(it) }, item.build(body),
+        )
+    }
+
     /** Explicit empty space along the main axis, for what [gap] does not cover. */
-    fun space(size: LayoutExpression): Element = fixed(size, id = "space$count")
+    fun space(size: LayoutExpression): Element = fixed(size)
 
     private fun gapBefore() {
         if (gap > 0.0 && count > 0) {
             val g = gap
             val spacer = Item()
-            items.fixed(spacer.mainSize { g }, "gap$count", spacer.build {})
+            items.fixed(spacer.mainSize { g }, id = null, build = spacer.build {})
         }
         count++
     }

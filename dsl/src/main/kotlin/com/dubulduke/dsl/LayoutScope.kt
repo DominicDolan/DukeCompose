@@ -167,14 +167,49 @@ class LayoutScope internal constructor(
     private var reservedHorizontal = false
     private var reservedVertical = false
 
+    /**
+     * Axes whose *size* alone belongs to something else — a shrink-to-fit flex row, whose main
+     * size its own governor computes while its origin stays the author's to write.
+     *
+     * A narrower reservation than [reserve], and needed because the two cases genuinely differ: a
+     * flex *item* surrenders both position and size to its row, while a shrink-to-fit *row*
+     * surrenders only its size. Without the distinction the row could not be positioned at all.
+     */
+    private var sizeReservedHorizontal = false
+    private var sizeReservedVertical = false
+
     internal fun reserve(horizontal: Boolean) {
         if (horizontal) reservedHorizontal = true else reservedVertical = true
     }
+
+    /** Write a size the author is forbidden to write — for whatever made the reservation. */
+    internal fun setReservedSize(horizontal: Boolean, e: LayoutExpression) {
+        if (horizontal) sizeReservedHorizontal = false else sizeReservedVertical = false
+        set(if (horizontal) Edge.WIDTH else Edge.HEIGHT, e)
+        if (horizontal) sizeReservedHorizontal = true else sizeReservedVertical = true
+    }
+
+    internal fun reserveSize(horizontal: Boolean) {
+        if (horizontal) sizeReservedHorizontal = true else sizeReservedVertical = true
+    }
+
+    private fun isSizeReserved(edge: Edge): Boolean =
+        edge.property == Property.SIZE &&
+            (if (edge.horizontal) sizeReservedHorizontal else sizeReservedVertical)
 
     internal fun isReserved(horizontal: Boolean): Boolean =
         if (horizontal) reservedHorizontal else reservedVertical
 
     private fun set(edge: Edge, e: LayoutExpression) {
+        if (isSizeReserved(edge) && !defaultsApplying) {
+            val axisName = if (edge.horizontal) "horizontal" else "vertical"
+            throw IllegalStateException(
+                "$element cannot set ${edge.name.lowercase()}: it is a shrink-to-fit flex row, so " +
+                    "its $axisName size is what the row computes from its items and the bound you " +
+                    "gave it. Position it with ${if (edge.horizontal) "left/right/centerX" else "top/bottom/centerY"}, " +
+                    "or drop shrinkToFit if you meant to state the size yourself."
+            )
+        }
         if (isReserved(edge.horizontal)) {
             // A default landing on a reserved axis is dropped rather than fatal, for the same reason
             // defaults yield generally: a container stamping `left` on its children should not stop

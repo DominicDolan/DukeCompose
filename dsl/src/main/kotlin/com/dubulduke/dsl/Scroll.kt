@@ -1,6 +1,7 @@
 package com.dubulduke.dsl
 
 import com.dubulduke.layout.Element
+import com.dubulduke.layout.Marker
 import com.dubulduke.layout.Region
 import com.dubulduke.layout.bottomOf
 import com.dubulduke.layout.heightOf
@@ -113,6 +114,16 @@ class ScrollScope<S : Any> internal constructor(
     fun classes(vararg names: String) = viewport.classes(*names)
 
     fun kind(kind: String) = viewport.kind(kind)
+
+
+    /** Read an ambient in the scroll area's own context. See [ElementScope.ambient]. */
+    fun <T> ambient(key: Ambient<T>): T = viewport.ambient(key)
+
+    /** Tag the viewport itself, for descendants' ancestor queries. */
+    fun marker(marker: Marker) = viewport.marker(marker)
+
+    /** Whether any ancestor of the viewport carries [marker]. */
+    fun hasAncestor(marker: Marker): Boolean = viewport.hasAncestor(marker)
 
     /** Click the viewport's background. Rows inside register their own. */
     fun onClick(handler: () -> Unit) = viewport.onClick(handler)

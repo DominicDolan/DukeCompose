@@ -50,6 +50,7 @@ class FlexRow internal constructor(
     private val freeSpaceOrNull: Slot?,
     private val totalFlexOrNull: Slot?,
     private val governorOrNull: GovernorHandle?,
+    private val contentOrNull: Slot? = null,
 ) {
     /**
      * The container's main-axis size minus the fixed items' sizes: the pool the growing items
@@ -76,6 +77,21 @@ class FlexRow internal constructor(
     /** Whether a governor was actually installed. False for an all-fixed clamped row. */
     val isGoverned: Boolean get() = governorOrNull != null
 
+    /**
+     * The row's resolved main-axis size. [FlexMode.SHRINK] only.
+     *
+     * **This is the node that breaks the shrink-to-fit cycle**, and it is the same move as
+     * [freeSpace] one level up. A clamped row reads its container's main size to work out the pool,
+     * so a container sized *by* these children closes a loop: container ← children ← governor ←
+     * container. Hoisting the answer into a node the governor *writes* and the container *reads*
+     * cuts it — the solve now reads an outer bound supplied by the author, never the container.
+     *
+     * The container's size expression is an ordinary read of this. No claim on the container's own
+     * slot, so its origin stays the author's to write and nested rows cannot collide over it.
+     */
+    val contentSize: Slot
+        get() = checkNotNull(contentOrNull) { "$this is not a shrink row; it has no content size" }
+
     override fun toString(): String = "FlexRow(${container.path}, $direction, $mode)"
 }
 
@@ -95,6 +111,22 @@ enum class FlexMode {
      * hoisting removes that loop — it is why the CSS flexbox spec has a freeze-and-loop step.
      */
     GOVERN,
+
+    /**
+     * **Shrink to fit.** The row is as large as its items want, up to an outer bound; past that
+     * they shrink. The row's own main size is an *output* of the solve rather than an input to it.
+     *
+     * This is the case [GOVERN] cannot express. A clamped row reads `sizeOf(container)` to size its
+     * pool, so it needs the container's size to already be known — which fails exactly when the
+     * container is sized *by* these children, and that is the commonest shrink-wrapped layout there
+     * is: a toolbar as wide as its buttons, that compresses them when the window narrows.
+     *
+     * The fix is the same one that made flex-grow acyclic, applied one level up. Rather than the
+     * governor reading the container, it *writes* a [FlexRow.contentSize] node the container reads,
+     * and takes its outer bound from an expression the author supplies. Nothing reads the
+     * container's main size during the solve, so there is no loop to break.
+     */
+    SHRINK,
 }
 
 /**
@@ -124,10 +156,27 @@ enum class FlexMode {
 fun ElementBuilder.flexRow(
     direction: Direction = Direction.HORIZONTAL,
     clamped: Boolean = false,
+    /**
+     * An outer bound on the row's main size, which switches it to [FlexMode.SHRINK].
+     *
+     * Supplying this makes the row's own size an *output*: it is as large as its items want, up to
+     * this, and past it they compress. The bound has to be an expression from outside rather than
+     * the container's own size, because computing that size is the point.
+     */
+    shrinkToFit: Computation? = null,
     build: FlexScope.() -> Unit,
 ): FlexRow {
     val g = tree.graph
     val container = element
+
+    if (shrinkToFit != null) {
+        require(!clamped) {
+            "$container cannot be both clamped and shrink-to-fit: one reads the container's size " +
+                "to divide a pool, the other computes that size, so together they are the cycle " +
+                "shrink-to-fit exists to avoid"
+        }
+        return shrinkRow(g, container, direction, shrinkToFit, build)
+    }
 
     if (clamped) return governedRow(g, container, direction, build)
 
@@ -256,6 +305,123 @@ private fun ElementBuilder.governedRow(
     return FlexRow(container, direction, FlexMode.GOVERN, null, null, gov)
 }
 
+/**
+ * The shrink-to-fit path: items state a preferred size, the row states an outer bound, and the
+ * governor writes both the items' sizes and the row's.
+ *
+ * [available] is the bound, supplied by the author — typically `parent.width` less some padding.
+ * It has to come from outside because the whole point is that the container's own size is being
+ * computed here; asking it what size it is would be the cycle this mode exists to avoid.
+ */
+private fun ElementBuilder.shrinkRow(
+    g: Graph,
+    container: Element,
+    direction: Direction,
+    available: Computation,
+    build: FlexScope.() -> Unit,
+): FlexRow {
+    val contentSlot = g.input(0.0, "${container.path}.content")
+    val row = FlexRow(container, direction, FlexMode.SHRINK, null, null, null, contentSlot)
+    val scope = FlexScope(this, row).apply(build)
+    val items = scope.shrinking
+
+    // Always installed, even with nothing shrinkable: the content size still has to be computed
+    // from the fixed items, and an input with no writer would sit at zero forever. Unlike the
+    // governed path there is no "nothing is contested" shortcut, because the row's own size is
+    // contested by construction.
+    val gov = g.governor(items.map { it.sizeSlot } + contentSlot, "${container.path}.shrink") {
+        val limit = available.run { evaluate() }
+
+        // Fixed items keep ordinary expressions, so the claim set stays minimal and they are read
+        // here like any other dependency.
+        var fixed = 0.0
+        for (c in childrenOf(container)) {
+            if (items.none { it.element === c }) fixed += sizeOf(c.axis(direction))
+        }
+
+        var wanted = fixed
+        for (k in items) wanted += read(k.basisSlot)
+
+        if (wanted <= limit || items.isEmpty()) {
+            // It all fits: everyone gets what they asked for and the row is exactly that wide.
+            for (k in items) writeOutput(k.sizeSlot, read(k.basisSlot))
+            writeOutput(contentSlot, wanted)
+            return@governor
+        }
+
+        var overflow = wanted - limit
+        var pool = items.filter { read(it.shrinkSlot) > 0.0 }
+        // Nothing willing to give way, so the row simply overflows its bound. Reporting the
+        // honest size rather than the bound matters: the container is then visibly too big, which
+        // is a layout bug the author can see, where silently clipping to the bound would hide it.
+        if (pool.isEmpty()) {
+            for (k in items) writeOutput(k.sizeSlot, read(k.basisSlot))
+            writeOutput(contentSlot, wanted)
+            return@governor
+        }
+
+        val frozen = HashMap<Element, Double>()
+        while (true) {
+            // The **scaled** shrink factor, as the flexbox spec has it: weight is `shrink × basis`,
+            // not `shrink` alone. Without the scaling a wide item and a narrow one with equal
+            // factors lose the same absolute amount, so the narrow one hits zero first and the
+            // result looks nothing like proportional compression.
+            var weight = 0.0
+            for (k in pool) weight += read(k.shrinkSlot) * read(k.basisSlot)
+            if (weight <= 0.0) {
+                for (k in pool) frozen[k.element] = read(k.basisSlot)
+                break
+            }
+
+            var violated = false
+            var recovered = 0.0
+            val survivors = ArrayList<ShrinkItem>(pool.size)
+            for (k in pool) {
+                val basis = read(k.basisSlot)
+                val want = basis - overflow * (read(k.shrinkSlot) * basis) / weight
+                val lo = k.minSlot?.let { read(it) } ?: 0.0
+                if (want < lo) {
+                    // Frozen at its floor, and the space it refused to give up goes back into the
+                    // overflow for everyone else to absorb — the same freeze-and-loop shape as the
+                    // clamped grow path, and it terminates for the same reason.
+                    frozen[k.element] = lo
+                    recovered += basis - lo
+                    violated = true
+                } else {
+                    survivors += k
+                }
+            }
+
+            if (!violated) {
+                for (k in pool) {
+                    val basis = read(k.basisSlot)
+                    frozen[k.element] = basis - overflow * (read(k.shrinkSlot) * basis) / weight
+                }
+                break
+            }
+
+            overflow -= recovered
+            pool = survivors
+            if (pool.isEmpty()) break
+            if (overflow <= 0.0) {
+                for (k in pool) frozen[k.element] = read(k.basisSlot)
+                break
+            }
+        }
+
+        var content = fixed
+        for (k in items) {
+            val size = frozen[k.element] ?: read(k.basisSlot)
+            writeOutput(k.sizeSlot, size)
+            content += size
+        }
+        writeOutput(contentSlot, content)
+    }
+
+    container.governor = gov
+    return FlexRow(container, direction, FlexMode.SHRINK, null, null, gov, contentSlot)
+}
+
 /** One growing item of a governed row: what its solve needs, captured at composition. */
 internal class FlexItem(
     @JvmField val element: Element,
@@ -264,6 +430,21 @@ internal class FlexItem(
     val sizeSlot: Slot,
     val minSlot: Slot?,
     val maxSlot: Slot?,
+)
+
+/**
+ * One shrinkable item: a preferred size and how willingly it gives it up.
+ *
+ * Separate from [FlexItem] because the quantities genuinely differ — a growing item has a share of
+ * a pool, a shrinking one has a size it starts from and a weight for losing it — and merging them
+ * would mean a class where half the fields are meaningless in either mode.
+ */
+internal class ShrinkItem(
+    @JvmField val element: Element,
+    val basisSlot: Slot,
+    val shrinkSlot: Slot,
+    val sizeSlot: Slot,
+    val minSlot: Slot?,
 )
 
 /** Adds items to a [flexRow]. */
@@ -313,6 +494,65 @@ class FlexScope internal constructor(
     /** The growing items, in order, for [governedRow] to hand to the governor. */
     internal val governed = ArrayList<FlexItem>()
 
+    /** The shrinkable items, in order, for [shrinkRow] to hand to the governor. */
+    internal val shrinking = ArrayList<ShrinkItem>()
+
+    /**
+     * An item at its preferred size, which it gives up under pressure. [FlexMode.SHRINK] only.
+     *
+     * [basis] is what it would like to be; [shrink] is how willingly it yields, weighted by the
+     * basis as the flexbox spec does — a wide item and a narrow one with equal factors should not
+     * lose the same *absolute* amount, or the narrow one reaches zero first and the result looks
+     * nothing like proportional compression. `shrink = 0.0` makes it incompressible.
+     *
+     * [min] is a floor; an item that would be pushed below it freezes there and its share of the
+     * overflow is redistributed.
+     */
+    fun shrinkable(
+        basis: Computation,
+        shrink: Double = 1.0,
+        id: String? = null,
+        min: Computation? = null,
+        build: ElementBuilder.() -> Unit,
+    ): Element {
+        require(row.mode == FlexMode.SHRINK) {
+            "shrinkable items need flexRow(shrinkToFit = …); ${row.container.path} is ${row.mode}"
+        }
+        require(shrink >= 0.0) { "shrink must not be negative, was $shrink" }
+
+        val direction = row.direction
+        val container = row.container
+        val shrinking = this.shrinking
+
+        return owner.child(id) {
+            val self = element
+            val g = tree.graph
+            val basisSlot = g.derive("${self.path}.basis", basis)
+            val shrinkSlot = g.input(shrink, "${self.path}.shrink")
+
+            val main: AxisBuilder.() -> Unit = {
+                origin {
+                    val p = prevOf(self)
+                    if (p == null) originOf(container.axis(direction))
+                    else endOf(p.axis(direction))
+                }
+                shrinking += ShrinkItem(
+                    element = self,
+                    basisSlot = basisSlot,
+                    shrinkSlot = shrinkSlot,
+                    sizeSlot = claimable(Property.SIZE),
+                    minSlot = min?.let { g.derive("${self.path}.min", it) },
+                )
+            }
+
+            when (direction) {
+                Direction.HORIZONTAL -> h(build = main)
+                Direction.VERTICAL -> v(build = main)
+            }
+            build()
+        }
+    }
+
     private fun add(
         id: String?,
         flex: Double,
@@ -327,8 +567,16 @@ class FlexScope internal constructor(
         val direction = row.direction
         val container = row.container
         val governedRow = row.mode == FlexMode.GOVERN
-        val freeSpace = if (governedRow) null else row.freeSpace
-        val totalFlex = if (governedRow) null else row.totalFlex
+        require(row.mode != FlexMode.SHRINK || flex <= 0.0) {
+            "${'$'}{row.container.path} is shrink-to-fit, so there is no free pool for a growing item " +
+                "to take a share of; use shrinkable(basis, shrink) instead"
+        }
+        // Only a hoisted row has these. A governed row keeps the pool inside its solve, and a
+        // shrink row has no pool at all — reaching for either would throw the "that is internal"
+        // error from a call site that has done nothing wrong.
+        val hoisted = row.mode == FlexMode.HOIST
+        val freeSpace = if (hoisted) row.freeSpace else null
+        val totalFlex = if (hoisted) row.totalFlex else null
         val governed = this.governed
 
         return owner.child(id) {
