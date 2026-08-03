@@ -193,6 +193,85 @@ frame's.
 `scroll` is exposed as a `Signal`, so scroll-to-top on a filter change or an animated scroll are
 ordinary writes.
 
+## Styling — functions, not classes
+
+A "class" is an **extension function on the style type**. There is no framework concept behind it:
+
+```kotlin
+// Styles.kt — the stylesheet
+fun <S : HasBackground> S.panel(palette: Palette) { color.set(palette.surface); radius = 8.0 }
+
+// at the call site
+style { panel(theme); if (graph.isPressed(element)) color.set(theme.pressed) }
+```
+
+Composing two "classes" is calling two functions; overriding is a later assignment. No registration,
+no selector language, no specificity rules, no matching pass — and a typo is a compile error rather
+than a rule that silently matches nothing. Generic in the capability (`S : HasBackground`) means
+each style states exactly what it needs and will not compile against a type lacking it.
+
+State variants need no pseudo-classes, because the styler is a **retained lambda re-evaluated when
+its inputs go dirty**: branch on `isHovered` / `isFocused` inside it and the usual invalidation
+applies. That distinction is invisible under per-frame composition and decisive under compose-once,
+where a one-shot block would read `hovered` exactly once and never again.
+
+## Ambients — theme, context and inheritance, as one thing
+
+```kotlin
+val Theme = ambientOf("theme") { DarkPalette }
+
+provide(Theme to SlatePalette) {
+    panel { style { panel(ambient(Theme)) } }   // this subtree only
+}
+```
+
+This is the mechanism that replaces three separate features, which is the argument for it. **Theme**
+is an ambient. **Contextual styling** — a card inside a card being outlined rather than elevated —
+is an ambient. **Inheritance** of font and text colour is an ambient. CSS needs a cascade, a
+specificity algorithm and a per-property inherit/no-inherit table to cover the same ground.
+
+It is also strictly more expressive than an ancestor selector, because it carries a **value** rather
+than a boolean — a third-level card can differ from a second, which `.card .card &` cannot say
+without enumerating depths.
+
+**Composition-time, and therefore free.** An ambient resolves when the element is *built*, and the
+result is a plain value the styler closes over: no graph node, no edge, no per-frame cost. What
+that depends on — where the element sits — cannot change, because nothing here reparents.
+
+The rule that follows, and the one sharp edge: **`provide` does not re-run anything.** Swapping a
+palette after composition has no effect, because descendants already read it. A theme that changes
+at runtime holds a `Signal` and is read *inside* a styler. Same distinction as `text("…")` versus
+`text { … }`, applied to styling.
+
+`forEach` captures the environment where it was **declared**, not where it rebuilds. Without that a
+row added at runtime would see the root's ambients and be styled differently from the rows beside
+it, with nothing in the source to explain why. There is a test for exactly that.
+
+## `hasAncestor` — the retrofit escape hatch
+
+Ambients need the ancestor to opt in and `provide`. That fails for "buttons inside a toolbar are
+compact" where the toolbar is third-party. For those:
+
+```kotlin
+val Toolbar = Marker("toolbar")
+
+toolbar { marker(Toolbar) }
+button  {
+    val compact = hasAncestor(Toolbar)          // once, when built
+    style { radius = if (compact) 2.0 else 8.0 }
+}
+```
+
+A typed `val`, so it survives a rename and cannot be typo'd — same reach as `.toolbar &`, with no
+parser. `ancestorCount(marker)` answers "how deeply" for depth-varying styling.
+
+Untracked and resolved on the spot, for the same reason ambients are: ancestry is fixed for an
+element's lifetime. Hoist it out of the styler as above; calling it inside one is not wrong, just
+wasteful.
+
+**Ancestor context only.** Both mechanisms resolve top-down during composition, so ancestors are
+known and descendants are not. CSS's `:has()` would need a second pass and is out of scope.
+
 ## Signals — no `graph.read` at the call site
 
 ```kotlin
@@ -304,7 +383,6 @@ defensible, so this layer picks one and says so.
 
 ## What is not here yet
 
-- **Style classes and contextual styling** (§4.1–4.3). `style { }` is per element today.
 
 
 The full register of deferred work — performance ceilings, unbuilt features, known gaps —

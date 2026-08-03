@@ -6,6 +6,10 @@ import com.dubulduke.layout.ElementBuilder
 import com.dubulduke.layout.ElementTree
 import com.dubulduke.layout.FocusDirection
 import com.dubulduke.layout.FontRef
+import com.dubulduke.layout.Marker
+import com.dubulduke.layout.ancestorCount
+import com.dubulduke.layout.hasAncestor
+import com.dubulduke.layout.marker
 import com.dubulduke.layout.focusNeighbour
 import com.dubulduke.layout.focusable
 import com.dubulduke.layout.interactive
@@ -70,6 +74,14 @@ class ElementScope<S : Any> internal constructor(
      * rather than fighting the row.
      */
     private val reserved: Direction? = null,
+    /**
+     * The ambient environment in force here. Passed down on [child] and pushed by [provide].
+     *
+     * Carried on the scope rather than held in a mutable stack somewhere central, because that is
+     * what makes it survivable across reconciliation: a `forEach` region captures the environment
+     * that was in force where it was declared, and hands it to items built long afterwards.
+     */
+    @JvmField internal val ambients: Ambients? = null,
 ) {
     @JvmField
     val element: Element = builder.element
@@ -80,7 +92,7 @@ class ElementScope<S : Any> internal constructor(
     /** This element, for utilities and for reading its own geometry outside a layout block. */
     val self: Layout get() = Layout(element)
 
-    private var layoutScope: LayoutScope? = null
+    internal var layoutScope: LayoutScope? = null
 
     /** Defaults this scope stamps on *its* children. Null unless a container scope sets one. */
     internal var childDefaults: (LayoutScope.() -> Unit)? = null
@@ -240,10 +252,68 @@ class ElementScope<S : Any> internal constructor(
      */
     fun child(id: String? = null, body: ElementScope<S>.() -> Unit): Element =
         builder.child(id) {
-            val scope = ElementScope(this, styles, this@ElementScope.childDefaults)
+            val scope = ElementScope(
+                this, styles, this@ElementScope.childDefaults,
+                ambients = this@ElementScope.ambients,
+            )
             scope.body()
             scope.finish()
         }
+
+    // ── Ambients — `dsl-and-engine.md` §4.2 ───────────────────────────────────────────────────
+
+    /** Read an ambient: the nearest ancestor's [provide], or the ambient's default. */
+    fun <T> ambient(key: Ambient<T>): T = Ambients.lookup(ambients, key)
+
+    /**
+     * Supply an ambient to everything built inside [body].
+     *
+     * Scoped to the block rather than to the element, so one element can provide different values
+     * to different parts of its own subtree, and so leaving the block needs no restore step — the
+     * environment is an immutable list and the outer scope still holds its own head.
+     */
+    fun <T> provide(entry: Pair<Ambient<T>, T>, body: ElementScope<S>.() -> Unit) {
+        val inner = ElementScope(
+            builder, styles, inherited, reserved,
+            ambients = Ambients(entry.first, entry.second, ambients),
+        )
+        // The same element, so the layout scope has to be shared or the inner block's `layout { }`
+        // would build a second one and `:layout` would reject the duplicate axis.
+        inner.layoutScope = layoutScope ?: scope()
+        inner.childDefaults = childDefaults
+        inner.body()
+        childDefaults = inner.childDefaults
+    }
+
+    /** Supply several ambients at once. Sugar for nested [provide] calls. */
+    fun provideAll(vararg entries: Pair<Ambient<*>, Any?>, body: ElementScope<S>.() -> Unit) {
+        var env = ambients
+        for ((key, value) in entries) env = Ambients(key, value, env)
+        val inner = ElementScope(builder, styles, inherited, reserved, ambients = env)
+        inner.layoutScope = layoutScope ?: scope()
+        inner.childDefaults = childDefaults
+        inner.body()
+        childDefaults = inner.childDefaults
+    }
+
+    // ── Markers and ancestor queries ──────────────────────────────────────────────────────────
+
+    /** Tag this element so descendants can find it with [hasAncestor]. */
+    fun marker(marker: Marker) {
+        builder.marker(marker)
+    }
+
+    /**
+     * Whether any ancestor carries [marker]. Resolved now, untracked — ancestry cannot change.
+     *
+     * Prefer [ambient] where the ancestor is yours to change: an ambient carries a value rather
+     * than a boolean, and does not require walking. This is the retrofit escape hatch, for when the
+     * container is third-party or should not have to know anything is asking.
+     */
+    fun hasAncestor(marker: Marker): Boolean = element.hasAncestor(marker)
+
+    /** How many ancestors carry [marker] — "how deeply nested am I", for depth-varying styling. */
+    fun ancestorCount(marker: Marker): Int = element.ancestorCount(marker)
 
     internal fun finish() {
         // `h { }` builds the axis from whatever the block registered and returns it built, so the

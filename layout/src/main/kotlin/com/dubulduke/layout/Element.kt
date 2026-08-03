@@ -204,6 +204,11 @@ class Element internal constructor(
     internal var focusNeighbours: Array<(() -> Element?)?>? = null
 
     /**
+     * Typed tags for ancestor queries. See [Marker]. Lazily allocated — almost nothing sets one.
+     */
+    internal var markers: ArrayList<Marker>? = null
+
+    /**
      * Retained click handler, or `null`. Registered during composition and dispatched by [Pointer].
      *
      * Retained rather than polled, which is a coupling worth naming: a polled `if (isHovering &&

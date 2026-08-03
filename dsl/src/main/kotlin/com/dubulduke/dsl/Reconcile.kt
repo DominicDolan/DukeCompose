@@ -107,6 +107,18 @@ internal class ListRegion<S : Any, T>(
 
     private val tree: ElementTree = scope.tree
 
+    /**
+     * The ambient environment as it stood where this `forEach` was declared.
+     *
+     * Captured, not read on demand, and this is the one genuinely subtle thing about ambients.
+     * `provide` is scoped to a *block* during composition, and that block finished long before a
+     * row is added at runtime — so an item built during reconciliation would otherwise see whatever
+     * environment happened to be current, which is the root's. The result would be a list whose
+     * later rows are styled differently from its first ones, with nothing in the source to explain
+     * it.
+     */
+    private val ambients: Ambients? = scope.ambients
+
     private class Entry(@JvmField val element: Element, @JvmField val data: RefSignal<Any?>)
 
     /** Key → what was built for it. Insertion-ordered to match the installed child list. */
@@ -182,7 +194,9 @@ internal class ListRegion<S : Any, T>(
                         next[i], "${container.path}.{$k}", RefEquality.EQUALS,
                     )
                     val built = create(key = k) {
-                        val itemScope = ElementScope(this, scope.styles, scope.childDefaults)
+                        val itemScope = ElementScope(
+                            this, scope.styles, scope.childDefaults, ambients = ambients,
+                        )
                         itemScope.body(Item(data as RefSignal<T>, k))
                         itemScope.finish()
                     }
