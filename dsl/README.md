@@ -306,6 +306,10 @@ defensible, so this layer picks one and says so.
 
 - **Style classes and contextual styling** (§4.1–4.3). `style { }` is per element today.
 
+
+The full register of deferred work — performance ceilings, unbuilt features, known gaps —
+is [`docs/deferred.md`](../../docs/deferred.md).
+
 ## Running
 
 ```

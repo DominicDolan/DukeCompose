@@ -98,6 +98,25 @@ fun ElementBuilder.onScroll(handler: (Double) -> Unit) {
     element.onScroll = handler
 }
 
+/**
+ * Register a drag handler, making this element interactive and **capturing the pointer** while it
+ * is held. The arguments are the pointer position in layout coordinates.
+ *
+ * Capture is what separates a drag from a sequence of clicks, and it is not a nicety: a slider
+ * thumb is a small box, the pointer leaves it almost immediately once you start moving, and
+ * without capture the drag stops the moment it does. So while the button is down, this element
+ * receives the pointer wherever it goes — outside its own box, over other elements, outside the
+ * window — and no other element sees hover.
+ *
+ * Fires every frame the button is held, starting with the frame of the press, and stops on release.
+ * It does **not** suppress [onClick]: a press and release without movement is still a click, which
+ * is what lets one element be both draggable and clickable without the two fighting.
+ */
+fun ElementBuilder.onDrag(handler: (x: Double, y: Double) -> Unit) {
+    interactive()
+    element.onDrag = handler
+}
+
 /** True while the pointer is over this element. A tracked read — use it in layout or style. */
 fun Graph.isHovered(e: Element): Boolean =
     e.interaction?.let { read(it.hoveredSlot) != 0.0 } ?: false
@@ -156,12 +175,56 @@ fun ElementTree.contains(e: Element, x: Double, y: Double): Boolean {
  */
 class Pointer(private val tree: ElementTree) {
 
+    init {
+        // Forget an element the instant it dies, rather than noticing next frame.
+        //
+        // All three of these are references the pointer holds *across* frames, and reconciliation
+        // runs between them — a list row removed by its own handler is the standing case, and it is
+        // the usual one rather than an edge case, because the thing you interact with is often the
+        // thing that goes. Polling `disposed` at the top of `update` leaves a whole frame in which
+        // these point at dead elements, and `clear()` could be called inside it: it writes to
+        // `interaction` slots, so a stale handle would reach `setInput` and fail there instead of
+        // here, naming a graph node rather than the removal that caused it.
+        //
+        // Nulling rather than dispatching anything. There is no "drag cancelled" event to send,
+        // and inventing one would mean calling application code from the middle of a structural
+        // edit, which is precisely what `onDispose` forbids.
+        tree.onDispose { e ->
+            if (hovered === e) hovered = null
+            if (pressed === e) pressed = null
+            if (captured === e) captured = null
+        }
+    }
+
     /** The element under the pointer as of the last [update], or `null`. */
     var hovered: Element? = null
         private set
 
     /** The element the pointer went down on and has not yet been released over. */
     var pressed: Element? = null
+        private set
+
+    /**
+     * The element holding the pointer for the duration of a drag, or `null`.
+     *
+     * Set on press when the pressed element has an `onDrag` handler, cleared on release. While it
+     * is non-null the hit test does not run and this element answers as though it were under the
+     * cursor — see [update].
+     */
+    var captured: Element? = null
+        private set
+
+    /** Where the pointer went down, in layout coordinates. Meaningless while nothing is pressed. */
+    var pressX: Double = 0.0
+        private set
+
+    /**
+     * Where the pointer went down, in layout coordinates.
+     *
+     * Exposed because the grab offset is the one thing a drag handler cannot reconstruct: by the
+     * time it wants to know where inside the thumb you grabbed, the thumb has already moved.
+     */
+    var pressY: Double = 0.0
         private set
 
     private var wasDown = false
@@ -224,15 +287,15 @@ class Pointer(private val tree: ElementTree) {
     fun update(x: Double, y: Double, down: Boolean, wheel: Double = 0.0) {
         val g = tree.graph
 
-        // The element under the pointer last frame may have been reconciled away since — a list
-        // row removed by its own click handler is the standing case, and it is the *usual* one
-        // rather than an edge case, because the thing you click is often the thing that goes.
-        // Forgetting it must not go through the graph: its nodes are gone, and clearing hover on
-        // a disposed element is how a stale handle reaches `setInput`.
-        if (hovered?.disposed == true) hovered = null
-        if (pressed?.disposed == true) pressed = null
+        // Nothing to clear here: `hovered`, `pressed` and `captured` are dropped the moment the
+        // element is disposed, by the listener registered in `init`.
 
-        val hit = tree.hitTest(x, y)
+        // While the pointer is captured there is no hit test — that is what capture *means*. The
+        // captured element stands in for whatever is under the cursor, so hover does not wander
+        // onto things the drag passes over and the release still counts as a click on the thing
+        // that was grabbed. Skipping the walk is a consequence rather than the point, though it
+        // does make a drag the cheapest frame the pointer has.
+        val hit = if (captured != null) captured else tree.hitTest(x, y)
 
         if (hit !== hovered) {
             hovered?.interaction?.let { g.setInput(it.hoveredSlot, 0.0) }
@@ -246,16 +309,29 @@ class Pointer(private val tree: ElementTree) {
 
         if (down && !wasDown) {
             pressed = hit
+            pressX = x
+            pressY = y
             hit?.interaction?.let { g.setInput(it.pressedSlot, 1.0) }
+            // Capture on press, not on first movement. Waiting for movement would drop the frame
+            // the gesture started on, and a slider grabbed and nudged within one frame would jump
+            // rather than track.
+            if (hit?.onDrag != null) captured = hit
         } else if (!down && wasDown) {
             val target = pressed
             target?.interaction?.let { g.setInput(it.pressedSlot, 0.0) }
             pressed = null
+            captured = null
             // A click is a press and a release on the *same* element, so dragging off a button
-            // and letting go is not a click.
+            // and letting go is not a click. Under capture `hit` *is* the captured element, so a
+            // drag that ends outside the thumb still reads as a click on it — deliberate: it is
+            // what makes an element able to be both draggable and clickable.
             if (target != null && target === hit) target.onClick?.invoke()
         }
         wasDown = down
+
+        // After the press branch, so the frame of the press already drags. Before the wheel, for
+        // no reason beyond determinism — nothing sensible does both at once.
+        if (down) captured?.onDrag?.invoke(x, y)
 
         if (wheel != 0.0) dispatchWheel(hit, wheel)
     }
@@ -302,13 +378,20 @@ class Pointer(private val tree: ElementTree) {
         }
     }
 
-    /** Forget hover and press without dispatching — for when the UI loses focus. */
+    /**
+     * Forget hover, press and capture without dispatching — for when the UI loses focus.
+     *
+     * Releasing capture here matters more than the rest: a window that loses focus mid-drag never
+     * delivers the mouse-up, so without this the element would still be captured when focus
+     * returned and the pointer would appear stuck to it.
+     */
     fun clear() {
         val g = tree.graph
         hovered?.interaction?.let { g.setInput(it.hoveredSlot, 0.0) }
         pressed?.interaction?.let { g.setInput(it.pressedSlot, 0.0) }
         hovered = null
         pressed = null
+        captured = null
         wasDown = false
         flips = 0
     }

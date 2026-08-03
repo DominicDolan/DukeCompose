@@ -491,6 +491,26 @@ the other way. Both default to no-ops: culling already removes whole elements wi
 help, so a backend that implements neither still clips lists, losing only the partial element at
 the boundary.
 
+### Drag capture
+
+`onDrag` captures the pointer on press and holds it until release. While captured **there is no hit
+test** — the captured element stands in for whatever is under the cursor — which is what makes a
+slider keep tracking after the pointer leaves its thumb, and what stops a drag lighting up
+everything it sweeps across. Capture is the exception to previous-frame hit testing rather than a
+violation of it: for the duration of the gesture the pointer simply belongs to one element.
+
+A press and release without movement is still a click, so an element can be both draggable and
+clickable without the two fighting. `pressX` / `pressY` are exposed because the grab offset is the
+one thing a handler cannot reconstruct — by the time it asks where inside the thumb you grabbed, the
+thumb has moved.
+
+`ElementTree.onDispose` announces every disposal, and `Pointer` uses it to drop `hovered`, `pressed`
+and `captured` the instant the element dies. Polling `disposed` once a frame is not enough: input
+dispatch runs *before* reconciliation, so a row removed by its own handler would leave a dangling
+reference for a whole frame — and `clear()` writes to `interaction` slots, so a stale handle would
+surface as a graph error naming a node rather than the removal that caused it. Any backend caching
+per-element work wants the same hook for the same reason.
+
 `onScroll` is the one event that **bubbles**, from the hovered element up to the nearest ancestor
 that handles it. Clicks must not — the topmost thing under the pointer is what makes a button a
 button — but the pointer is over a row far more often than over the list, so a wheel that stopped
@@ -502,14 +522,18 @@ at the first interactive element would make scrolling fail wherever the content 
   main-axis size as an outer input, so a clamped row whose container is sized *by these children*
   is still a genuine cycle. Closing it means letting the governor claim the container's size too —
   the mechanism allows it, no container drives it yet.
-- **Keyboard focus and pointer capture.** `Pointer` handles hover, press, click and the wheel.
-  Focus is application state — another input node — and routes without hit testing; drag needs
-  capture overriding the hit test, so that leaving a slider's box mid-drag keeps moving it.
+- **Keyboard focus.** `Pointer` handles hover, press, click, the wheel and drag capture. Focus is
+  the remaining input concern, and it is different in kind: it is application state — another input
+  node — and routes *without* hit testing.
 
 All three of the plan's go/no-go points — steps 3, 4 and 6 — now pass. Step 3 is covered by
 `ElementTreeTest`: a 500-row list chained through `prev`, and a shrink-wrap panel
 whose children align to it. The panel test also asserts the dependency sets, since "it gives
 the right answer" and "it is acyclic for the right reason" are different claims.
+
+
+The full register of deferred work — performance ceilings, unbuilt features, known gaps —
+is [`docs/deferred.md`](../../docs/deferred.md).
 
 ## Running
 

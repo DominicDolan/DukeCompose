@@ -189,6 +189,10 @@ The one allocation left is the lambda object itself, and only for capturing lamb
 time, never per recompute. If this signature is ever changed, re-check it with
 `javap -c`; the failure mode is silent and would show up only as GC pressure under load.
 
+
+The full register of deferred work — performance ceilings, unbuilt features, known gaps —
+is [`docs/deferred.md`](../../docs/deferred.md).
+
 ## Running
 
 ```

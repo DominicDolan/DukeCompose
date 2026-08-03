@@ -150,6 +150,60 @@ class Element internal constructor(
         internal set
 
     /**
+     * Retained drag handler, or `null`. Its presence is what makes [Pointer] capture on press.
+     *
+     * Capture is the exception to previous-frame hit testing rather than a violation of it: while
+     * captured, there *is* no hit test — the pointer belongs to this element until release, which
+     * is precisely why a slider keeps tracking after the cursor leaves its box.
+     */
+    var onDrag: ((Double, Double) -> Unit)? = null
+        internal set
+
+    /**
+     * Keyboard focus state, or `null` for an element that never opted in.
+     *
+     * Separate from [interaction] rather than a third slot on it, because **hit-testable and
+     * focusable are different capabilities that mostly do not coincide**. A scroll area is
+     * interactive — it takes the wheel and answers the pointer — and must never be a tab stop; a
+     * decorative panel is neither; only controls are both. Folding focus into `Interaction` would
+     * allocate a node per hoverable element to serve the few that are focusable.
+     */
+    var focus: Focus? = null
+        internal set
+
+    /**
+     * What activating this element does — the keyboard's equivalent of a click.
+     *
+     * Falls back to [onClick] when unset, which is the behaviour worth having by default: a button
+     * that already says what clicking it does should not have to say it twice to be operable from
+     * the keyboard. Set it explicitly only where the two genuinely differ.
+     */
+    var onActivate: (() -> Unit)? = null
+        internal set
+
+    /**
+     * Reveal a descendant — scroll it into view. Set by containers that can, `null` otherwise.
+     *
+     * The hook exists because focus can land somewhere off-screen and the element that has to do
+     * something about it is an *ancestor*, which the focused element knows nothing about. Walking
+     * up and asking is the only direction that composes: a control must not have to know it is
+     * inside a scroll area, or it could not be reused outside one.
+     */
+    var onReveal: ((Element) -> Unit)? = null
+        internal set
+
+    /**
+     * Explicit directional-navigation targets, indexed by [FocusDirection.ordinal], or `null`.
+     *
+     * Lazily allocated because almost nothing sets one. The geometric answer is right most of the
+     * time and wrong often enough that every shipping game UI grows overrides — a tab bar whose
+     * "down" should enter the panel it controls rather than the nearest box below it, say. Having
+     * them from the start is cheaper than retrofitting them around a heuristic people have already
+     * built layouts to satisfy.
+     */
+    internal var focusNeighbours: Array<(() -> Element?)?>? = null
+
+    /**
      * Retained click handler, or `null`. Registered during composition and dispatched by [Pointer].
      *
      * Retained rather than polled, which is a coupling worth naming: a polled `if (isHovering &&

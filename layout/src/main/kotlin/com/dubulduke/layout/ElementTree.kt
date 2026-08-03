@@ -156,6 +156,29 @@ class ElementTree(
     /** Registered regions that are still live. Diagnostics and tests. */
     val regionCount: Int get() = regions.count { !it.container.disposed }
 
+    private val disposeListeners = ArrayList<(Element) -> Unit>()
+
+    /**
+     * Be told when an element is destroyed, so that anything keyed by element identity can drop it.
+     *
+     * This exists because **compose-once makes an `Element` look like a safe cache key, and
+     * reconciliation makes that false**. A backend caching per-element work — a tesselated string,
+     * a vertex buffer, a measured layout — is doing the right thing: those are expensive and an
+     * element's identity is stable for as long as it lives. What it cannot see is the end of that
+     * life, because a disposed element is simply absent from the next draw walk rather than
+     * announced. The result is a map that grows for as long as a list churns.
+     *
+     * The alternative was for each backend to sweep its own map against `disposed`, which is O(cache)
+     * per frame to find the rare removal, and which every backend would have to remember to do.
+     *
+     * Listeners fire **after** the element's nodes are released and [Element.disposed] is set, once
+     * per element in a subtree, deepest last. A listener must not touch the graph or the tree: it is
+     * called from the middle of a structural edit, and there is nothing here it could safely read.
+     */
+    fun onDispose(listener: (Element) -> Unit) {
+        disposeListeners += listener
+    }
+
     /**
      * Destroy [e] and everything under it: its graph nodes, its id bindings, its place in its
      * parent's child list.
@@ -199,6 +222,7 @@ class ElementTree(
         graph.dispose(e.childrenSlot)
 
         e.disposed = true
+        for (i in disposeListeners.indices) disposeListeners[i](e)
     }
 
     internal fun reindexAndPublish(parent: Element) {

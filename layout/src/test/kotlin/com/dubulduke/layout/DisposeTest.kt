@@ -110,6 +110,44 @@ class DisposeTest {
     }
 
     @Test
+    fun `a disposal listener is told about every element in the subtree`() {
+        val root = tree.root("root") {
+            h { origin { 0.0 }; size { 100.0 } }
+            v { origin { 0.0 }; size { 100.0 } }
+            child("parent") {
+                h { origin { 0.0 }; size { 10.0 } }
+                v { origin { 0.0 }; size { 10.0 } }
+                child("kid") {
+                    h { origin { 0.0 }; size { 5.0 } }
+                    v { origin { 0.0 }; size { 5.0 } }
+                }
+            }
+        }
+        val seen = ArrayList<String>()
+        tree.onDispose { seen += it.id ?: it.path }
+
+        tree.dispose(tree.query("parent"))
+
+        // Both, and the child first — a listener releasing resources should see the leaves before
+        // the branch they hung off.
+        assertEquals(listOf("kid", "parent"), seen)
+        assertEquals(0, root.children.size)
+    }
+
+    @Test
+    fun `a disposal listener sees the element already marked disposed`() {
+        stack(2)
+        var wasDisposed = false
+        tree.onDispose { wasDisposed = it.disposed }
+
+        tree.dispose(tree.query("c1"))
+
+        // The contract a cache depends on: by the time it is told, the element is unambiguously
+        // dead, so a listener cannot be tricked into re-adding it.
+        assertTrue(wasDisposed)
+    }
+
+    @Test
     fun `the root cannot be disposed`() {
         stack(1)
         val e = assertFailsWith<IllegalStateException> { tree.dispose(tree.root) }

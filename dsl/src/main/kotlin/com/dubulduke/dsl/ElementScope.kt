@@ -7,6 +7,7 @@ import com.dubulduke.layout.ElementTree
 import com.dubulduke.layout.FontRef
 import com.dubulduke.layout.interactive
 import com.dubulduke.layout.onClick
+import com.dubulduke.layout.onDrag
 import com.dubulduke.layout.onScroll
 import com.dubulduke.layout.style
 import com.dubulduke.reactivity.Graph
@@ -159,6 +160,20 @@ class ElementScope<S : Any> internal constructor(
      */
     fun onScroll(handler: (Double) -> Unit) {
         builder.onScroll(handler)
+    }
+
+    /**
+     * Register a drag handler, capturing the pointer while the button is held.
+     *
+     * The arguments are the pointer position in layout coordinates — the same space `left { }` and
+     * `top { }` work in, so a handler usually reads its own geometry and writes a signal:
+     *
+     * ```kotlin
+     * onDrag { x, _ -> value.value = ((x - self.left) / self.width).coerceIn(0.0, 1.0) }
+     * ```
+     */
+    fun onDrag(handler: (x: Double, y: Double) -> Unit) {
+        builder.onDrag(handler)
     }
 
     /**
