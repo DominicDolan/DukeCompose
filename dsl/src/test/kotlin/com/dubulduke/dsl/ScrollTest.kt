@@ -45,6 +45,8 @@ class ScrollTest {
         override val window: Window get() = Window(0.0, 0.0, screenWidth, screenHeight)
         override val viewport: Viewport get() = Viewport(0.0, 0.0, screenWidth, screenHeight)
 
+        override val input = TestInput()
+
         val clips = ArrayList<ClipRect>()
         var depth = 0
         var maxDepth = 0
@@ -106,7 +108,7 @@ class ScrollTest {
     }
 
     /** A frame with the pointer somewhere harmless and no input. */
-    private fun Recorder.idle() = update(-50.0, -50.0, pressed = false)
+    private fun Recorder.idle() = frame()
 
     // -----------------------------------------------------------------------------------
     // Offset
@@ -160,11 +162,13 @@ class ScrollTest {
         // The pointer is over row1, which is interactive and has no wheel handler of its own. If
         // dispatch did not bubble, this would scroll nothing — and the pointer is over a row
         // essentially always, so that failure would look like "scrolling is broken".
-        app.update(10.0, 30.0, pressed = false, wheel = -1.0)
+        app.frameSettled(10.0, 30.0, wheel = -1.0)
         assertEquals(10.0, scroll.scroll.value, "one notch at speed 10")
 
-        app.update(10.0, 30.0, pressed = false, wheel = -3.0)
-        assertEquals(40.0, scroll.scroll.value)
+        app.frameSettled(10.0, 30.0, wheel = -3.0)
+        // A tolerance, because the easing delivers a notch as a sum of decaying steps rather than
+        // as one number — the total is exact in intent and not in binary floating point.
+        assertEquals(40.0, scroll.scroll.value, absoluteTolerance = 1e-9)
     }
 
     @Test
@@ -173,7 +177,7 @@ class ScrollTest {
         // Below the single row, so the hit is the area itself. It only answers because scrollArea
         // opts into `interactive`; without that the hit test returns null and there is nothing to
         // bubble from.
-        app.update(10.0, 80.0, pressed = false, wheel = -1.0)
+        app.frameSettled(10.0, 80.0, wheel = -1.0)
         assertEquals(0.0, scroll.scroll.value, "one row fits, so there is nothing to scroll")
         assertSame(app.tree.query("area"), app.pointer.hovered)
     }
@@ -181,7 +185,7 @@ class ScrollTest {
     @Test
     fun `a wheel outside the area does nothing`() {
         val (app, scroll) = app()
-        app.update(-50.0, -50.0, pressed = false, wheel = -5.0)
+        app.frameSettled(-50.0, -50.0, wheel = -5.0)
         assertEquals(0.0, scroll.scroll.value)
     }
 
@@ -205,12 +209,87 @@ class ScrollTest {
                 }
             }
         }
-        app.update(10.0, 20.0, pressed = false, wheel = -1.0)
+        app.frameSettled(10.0, 20.0, wheel = -1.0)
 
         // One gesture moves one thing. Notifying both would scroll the row out from under the
         // pointer at twice the expected rate, which reads as a jumpy list rather than as a bug.
         assertEquals(10.0, inner.scroll.value)
         assertEquals(0.0, outer.scroll.value)
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Wheel easing
+    //
+    // A notch is spread over a fraction of a second so it does not read as a stutter. The property
+    // that matters is that easing changes *when* the movement arrives and never *how much* —
+    // otherwise the list lands somewhere different depending on the frame rate, which is the worst
+    // kind of bug to chase because it reproduces only on other people's machines.
+    // -----------------------------------------------------------------------------------
+
+    @Test
+    fun `a notch is delivered over several frames, not all at once`() {
+        val (app, scroll) = app()
+        app.frame(10.0, 30.0, wheel = -1.0)
+
+        val afterOne = scroll.scroll.value
+        assertTrue(afterOne > 0.0, "some of it arrived immediately")
+        assertTrue(afterOne < 10.0, "but not all of it: got $afterOne of 10")
+
+        repeat(20) { app.frame(10.0, 30.0) }
+        assertTrue(scroll.scroll.value > afterOne, "it kept arriving with no further input")
+    }
+
+    @Test
+    fun `the total delivered is the notch, at any frame rate`() {
+        // The overshoot this pins down was real and frame-rate dependent: taking a fixed fraction
+        // of the *original* notch each frame stops on whichever frame first crosses the target, so
+        // it overruns by up to a frame's worth — nothing at 60fps, a third of a notch at 10fps.
+        // Taking the fraction of what is left converges instead.
+        for (fps in listOf(144.0, 60.0, 30.0, 10.0, 5.0)) {
+            val (app, scroll) = app()
+            val delta = 1.0 / fps
+            app.frame(10.0, 30.0, wheel = -1.0, delta = delta)
+            repeat(200) { app.frame(10.0, 30.0, delta = delta) }
+
+            assertEquals(10.0, scroll.scroll.value, absoluteTolerance = 1e-6, message = "at $fps fps")
+        }
+    }
+
+    @Test
+    fun `a frame longer than the whole animation delivers the notch and no more`() {
+        val (app, scroll) = app()
+        // The clamp on the fraction. Without it a long frame multiplies the notch by delta/time,
+        // which at 5fps would deliver more than was asked for rather than merely all of it.
+        app.frame(10.0, 30.0, wheel = -1.0, delta = 10.0)
+        assertEquals(10.0, scroll.scroll.value, absoluteTolerance = 1e-9)
+    }
+
+    @Test
+    fun `notches arriving mid-animation add up`() {
+        val (app, scroll) = app()
+        app.frame(10.0, 30.0, wheel = -1.0)
+        repeat(3) { app.frame(10.0, 30.0) }
+        // A second notch while the first is still playing out. The pending distance is one number,
+        // so this is addition rather than two competing animations.
+        app.frameSettled(10.0, 30.0, wheel = -2.0)
+
+        assertEquals(30.0, scroll.scroll.value, absoluteTolerance = 1e-6)
+    }
+
+    @Test
+    fun `the wheel stops dispatching once a notch is spent`() {
+        val (app, scroll) = app()
+        app.frameSettled(10.0, 30.0, wheel = -1.0)
+        val settled = scroll.scroll.value
+        val recomputes = app.graph.stats.recomputed
+
+        // Exponential decay never actually reaches zero, so without the epsilon snap this would
+        // keep dispatching ever-smaller wheel events forever, waking the hit test on a UI nobody
+        // is touching.
+        repeat(50) { app.frame(10.0, 30.0) }
+
+        assertEquals(settled, scroll.scroll.value)
+        assertEquals(recomputes, app.graph.stats.recomputed, "an idle wheel is free")
     }
 
     // -----------------------------------------------------------------------------------
@@ -222,7 +301,7 @@ class ScrollTest {
         val (app, scroll) = app()
 
         // row0 occupies 0..20 while unscrolled, so a press at y=10 lands on it.
-        app.update(10.0, 10.0, pressed = false)
+        app.frame(10.0, 10.0)
         assertEquals("ui.area.[0].row0", app.pointer.hovered?.path)
 
         scroll.scrollBy(300.0)
@@ -232,7 +311,7 @@ class ScrollTest {
         // clip check in hitTest it would still answer, and clicks would land on rows that are not
         // on screen — the failure that makes clipping feel broken rather than merely unclipped.
         assertEquals(-300.0, app.graph.topOf(app.tree.query("row0")))
-        app.update(10.0, 10.0, pressed = false)
+        app.frame(10.0, 10.0)
         assertEquals("ui.area.[0].row15", app.pointer.hovered?.path, "row15 is what is there now")
     }
 

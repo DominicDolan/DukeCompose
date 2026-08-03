@@ -80,6 +80,8 @@ abstract class DukeApp<S : Any, R>(
      */
     @JvmField val pointer: Pointer = Pointer(tree)
 
+    abstract val input: DukeInput
+
     /**
      * The size of the layout coordinate space, as graph inputs.
      *
@@ -130,38 +132,67 @@ abstract class DukeApp<S : Any, R>(
         return tree.compose(styles, id, build).also { rootElement = it }
     }
 
+
     /**
-     * Push this frame's pointer and viewport size into the graph, and dispatch any clicks.
+     * Wheel movement asked for but not yet delivered. See [update].
+     *
+     * One number, not two. The distance still owed *is* the animation state: there is nothing to
+     * remember about how far it has already travelled, because that has already been dispatched
+     * and acted on by whatever was under the pointer.
+     */
+    private var pendingScroll = 0.0
+
+    /**
+     * Roughly how long a wheel notch takes to play out. Zero dispatches it in one frame.
+     *
+     * `open` because it is a feel decision, and feel belongs to the game rather than the framework.
+     */
+    protected open val animatedScrollTime: Double get() = 0.15
+
+    /**
+     * Push this frame's pointer and viewport size into the graph, and dispatch input.
      *
      * Order matters, and it is the order of §7.1: hit test and dispatch first, so a handler that
      * mutates application state does so *before* the layout that will read it. Writing an unchanged
      * input is free — the graph compares before it marks — so a still pointer over a still window
      * costs one hit test and no invalidation at all.
      *
-     * [pointerX] and [pointerY] are in the host's **window** coordinates, the same space [window]
-     * is expressed in; the viewport transform is applied for you.
+     * ### The wheel is eased, and eases over what is *left*
      *
-     * [wheel] is this frame's wheel movement, positive upwards, in notches — zero on the vast
-     * majority of frames. It is dispatched after the click, bubbling from the element under the
-     * pointer to the nearest ancestor that handles it (`scrollArea` being the usual one).
+     * A wheel notch arrives as one discrete jump, which reads as a stutter, so it is spread over
+     * [animatedScrollTime]. The fraction is taken from the distance still owed rather than from the
+     * original notch, and that is the difference between an ease and an overshoot: a fixed fraction
+     * of the original delivers a linear ramp that stops on whichever frame first crosses the target,
+     * overrunning by up to a whole frame's worth. That error is invisible at 60fps and grows as the
+     * frame rate drops — 11% at 30fps, 33% at 10fps — which is the worst possible failure shape,
+     * because it only misbehaves on the machines least able to hide it.
+     *
+     * Taking a fraction of the remainder is exponential decay: it converges on exactly what was
+     * asked for at any frame rate, and a long frame delivers more of the notch rather than more
+     * than the notch. [delta] is seconds since the last frame.
      */
-    fun update(pointerX: Double, pointerY: Double, pressed: Boolean, wheel: Double = 0.0) {
+    fun update(delta: Double) {
         if (isComposed) {
-            pointer.update(this, pointerX, pointerY, pressed, wheel)
+            pendingScroll += input.scrollDistance
+
+            // Clamped at 1: a frame longer than the whole animation finishes it, and must not
+            // deliver more than is owed.
+            val fraction = if (animatedScrollTime <= 0.0) 1.0
+            else minOf(1.0, delta / animatedScrollTime)
+
+            var step = pendingScroll * fraction
+            pendingScroll -= step
+            // Decay approaches zero without arriving, so the tail is folded into the last step
+            // rather than left to dispatch ever-smaller wheel events forever — which would keep
+            // waking the hit test on a UI nobody is touching.
+            if (abs(pendingScroll) < SCROLL_EPSILON) {
+                step += pendingScroll
+                pendingScroll = 0.0
+            }
+
+            pointer.update(this, input.pointerX, input.pointerY, input.isClickDown(), step)
             reconcile()
         }
-        syncViewport()
-    }
-
-    /**
-     * The frame tick for a platform that samples its own input.
-     *
-     * The default only refreshes the viewport, which is all a platform without a pointer needs.
-     * Override to read the mouse and delegate to [update]`(x, y, pressed)` — then a caller says
-     * `ui.update()` whether or not the platform has input, which is the point.
-     */
-    open fun update() {
-        if (isComposed) reconcile()
         syncViewport()
     }
 
@@ -199,5 +230,10 @@ abstract class DukeApp<S : Any, R>(
     open fun draw(renderer: R) {
         if (!isComposed) return
         tree.draw(this, this, renderer)
+    }
+
+    private companion object {
+        /** Below this, the remaining scroll is not worth another frame of animation. */
+        const val SCROLL_EPSILON = 1e-4
     }
 }

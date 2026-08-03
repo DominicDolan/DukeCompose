@@ -42,6 +42,8 @@ class DukeAppTest {
         // in the viewport inputs if the base class forwarded the extent unchanged.
         override val viewport: Viewport get() = Viewport(0.0, 0.0, screenWidth, -screenHeight)
 
+        override val input = TestInput()
+
         override fun drawBox(node: NodeView<AppStyle>, renderer: MutableList<String>) {
             renderer += "box ${node.element.path}"
         }
@@ -80,7 +82,7 @@ class DukeAppTest {
         assertEquals(200.0, app.graph.widthOf(app.root!!))
 
         app.screenWidth = 320.0
-        app.update()
+        app.frame()
         assertEquals(320.0, app.graph.widthOf(app.root!!))
     }
 
@@ -122,12 +124,12 @@ class DukeAppTest {
 
         // Window coordinates: the y-flip from the negative viewport extent is applied for us, so
         // an element at layout y=10..30 is hit at window y=70..90 on a 100-tall screen.
-        app.update(20.0, 80.0, pressed = true)
-        app.update(20.0, 80.0, pressed = false)
+        app.frame(20.0, 80.0, pressed = true)
+        app.frame(20.0, 80.0, pressed = false)
         assertEquals(1, clicks)
 
-        app.update(20.0, 5.0, pressed = true)
-        app.update(20.0, 5.0, pressed = false)
+        app.frame(20.0, 5.0, pressed = true)
+        app.frame(20.0, 5.0, pressed = false)
         assertEquals(1, clicks)
     }
 
@@ -135,7 +137,7 @@ class DukeAppTest {
     fun `update and draw before compose do nothing`() {
         val app = TestApp()
         assertFalse(app.isComposed)
-        app.update()
+        app.frame()
         val calls = mutableListOf<String>()
         app.draw(calls)
         assertTrue(calls.isEmpty())

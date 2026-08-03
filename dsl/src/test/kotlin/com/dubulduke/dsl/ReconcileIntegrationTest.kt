@@ -36,6 +36,8 @@ class ReconcileIntegrationTest {
     ) {
         override val window get() = Window(0.0, 0.0, 800.0, 600.0)
         override val viewport get() = Viewport(0.0, 0.0, 800.0, -600.0)
+
+        override val input = TestInput()
         override fun drawBox(node: NodeView<AppStyle>, renderer: MutableList<String>) {}
         override fun drawText(node: NodeView<AppStyle>, text: String, renderer: MutableList<String>) {}
     }
@@ -107,7 +109,7 @@ class ReconcileIntegrationTest {
 
     /** What Mechanica does every frame: sample the pointer, reconcile, draw. */
     private fun frame(pressed: Boolean = false) {
-        ui.update(px, py, pressed)
+        ui.frame(px, py, pressed)
         ui.draw(mutableListOf())
     }
 
