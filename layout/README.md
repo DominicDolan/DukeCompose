@@ -516,15 +516,63 @@ that handles it. Clicks must not — the topmost thing under the pointer is what
 button — but the pointer is over a row far more often than over the list, so a wheel that stopped
 at the first interactive element would make scrolling fail wherever the content is densest.
 
+## Keyboard focus
+
+`focusable()` makes an element a tab stop; `graph.isFocused(e)` is a tracked read like `isHovered`.
+It is **separate from `interactive()`** because hit-testable and focusable mostly do not coincide: a
+scroll area answers the pointer and must never be a tab stop, a decorative panel is neither, only
+controls are both.
+
+**Focus routes without hit testing**, which is what makes it different in kind from everything
+`Pointer` does. The pointer's question is "what is under this coordinate?", answered by geometry
+every frame. Focus's is "what did the user last select?" — retained state that changes only when
+something asks it to, so a UI nobody is tabbing through costs nothing at all.
+
+Focus is a **per-element input**, not one node holding "who is focused". The single-node version is
+the obvious design and it is wrong for the reason hover is not built that way: every style reading
+focus would depend on that one node, so any change would invalidate all of them. Per-element means
+exactly two nodes invalidate per change, however many focusable elements exist.
+
+Two navigation policies share one set of focusables, so they can never disagree about what is
+focusable, only about what comes next:
+
+- **`next` / `previous`** walk **tree order** — composition order, which is what the author can see
+  in the file and on the screen. There is no `tabIndex`; global ordering numbers are the part of the
+  web platform that reliably rots, because nothing keeps them consistent through a refactor.
+- **`move(direction)`** navigates geometrically, for arrow keys or a d-pad. A candidate must lie in
+  the direction of travel, and among those **the most perpendicular overlap wins**, ties broken by
+  distance. Overlap before distance is what makes a grid behave: pure nearest-centre sends "down"
+  sideways in any two-column layout, because the box beside you is closer than the one below.
+
+`focusNeighbour(direction) { … }` overrides the geometry, resolved when navigation happens rather
+than when it is registered. Returning `null` is a wall — "nothing that way" — not a request to fall
+back on geometry, which would make the override look intermittent.
+
+`onActivate` is the keyboard's click, and falls through to `onClick` when unset, so a focusable
+button needs nothing extra.
+
+### Focus and clipping
+
+The boundary of the tab order is the subtle part, and getting it wrong breaks one of two things.
+Filter by visibility and a list becomes untabbable past its first screenful — tab from the last
+visible row and there is no next row *in the order*, so it wraps to the top forever. Do not filter
+and a subtree clipped away by something that cannot scroll becomes invisible tab stops.
+
+So the test is not "is it on screen" but **"would focusing it put it on screen"**. A clipping
+ancestor that can `onReveal` is not an obstacle, because focus will ask it to scroll; one that
+cannot is. `isVisible` and `isFocusReachable` are the two questions, and they are deliberately
+different.
+
+`onReveal` is how an ancestor offers to scroll a descendant into view, walked innermost-first after
+a focus change. Up rather than down, because a control must not have to know it is inside a scroll
+area or it could not be reused outside one.
+
 ## What is not here yet
 
 - **Flex-shrink inside a shrink-to-fit container.** `clamped = true` reads the container's own
   main-axis size as an outer input, so a clamped row whose container is sized *by these children*
   is still a genuine cycle. Closing it means letting the governor claim the container's size too —
   the mechanism allows it, no container drives it yet.
-- **Keyboard focus.** `Pointer` handles hover, press, click, the wheel and drag capture. Focus is
-  the remaining input concern, and it is different in kind: it is application state — another input
-  node — and routes *without* hit testing.
 
 All three of the plan's go/no-go points — steps 3, 4 and 6 — now pass. Step 3 is covered by
 `ElementTreeTest`: a 500-row list chained through `prev`, and a shrink-wrap panel

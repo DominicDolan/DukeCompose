@@ -4,6 +4,7 @@ import com.dubulduke.layout.DukeBackend
 import com.dubulduke.layout.DukeHost
 import com.dubulduke.layout.Element
 import com.dubulduke.layout.ElementTree
+import com.dubulduke.layout.Focuser
 import com.dubulduke.layout.Pointer
 import com.dubulduke.layout.TextMetrics
 import com.dubulduke.layout.draw
@@ -79,6 +80,14 @@ abstract class DukeApp<S : Any, R>(
      * anything is drawn.
      */
     @JvmField val pointer: Pointer = Pointer(tree)
+
+    /**
+     * Keyboard focus and directional navigation. `dsl-and-engine.md` §7, the keyboard half.
+     *
+     * Separate from [pointer] because focus routes *without* hit testing: it is retained state that
+     * changes when something asks it to, not a per-frame answer to "what is under the cursor?".
+     */
+    @JvmField val focus: Focuser = Focuser(tree)
 
     abstract val input: DukeInput
 
@@ -191,6 +200,13 @@ abstract class DukeApp<S : Any, R>(
             }
 
             pointer.update(this, input.pointerX, input.pointerY, input.isClickDown(), step)
+
+            // Focus navigation *after* the pointer and *before* reconcile, for the same reason the
+            // pointer runs where it does: activating a focused button may change the list, and that
+            // has to be settled before anything measures. Navigation itself reads geometry — the
+            // previous frame's — which is the standing arrangement here rather than a compromise.
+            input.navigation?.let { focus.handle(it) }
+
             reconcile()
         }
         syncViewport()

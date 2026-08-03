@@ -216,6 +216,7 @@ class ElementTree(
         e.content?.let { graph.dispose(it.textSlot); graph.dispose(it.fontSlot) }
         e.styleNode?.let { graph.dispose(it.slot) }
         e.interaction?.let { graph.dispose(it.hoveredSlot); graph.dispose(it.pressedSlot) }
+        e.focus?.let { graph.dispose(it.focusedSlot) }
         e.flexSlot?.let { graph.dispose(it) }
         e.hOrNull?.let { graph.dispose(it.firstSlot); graph.dispose(it.secondSlot) }
         e.vOrNull?.let { graph.dispose(it.firstSlot); graph.dispose(it.secondSlot) }

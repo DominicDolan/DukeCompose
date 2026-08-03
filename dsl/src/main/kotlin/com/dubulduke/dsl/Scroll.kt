@@ -2,7 +2,10 @@ package com.dubulduke.dsl
 
 import com.dubulduke.layout.Element
 import com.dubulduke.layout.Region
+import com.dubulduke.layout.bottomOf
 import com.dubulduke.layout.heightOf
+import com.dubulduke.layout.onReveal
+import com.dubulduke.layout.topOf
 import com.dubulduke.layout.widthOf
 
 /**
@@ -64,6 +67,10 @@ fun <S : Any> ElementScope<S>.scrollArea(
 
     val scope = ScrollScope(this, graph.signal(0.0, "${element.path}.scroll"), speed)
     onScroll { delta -> scope.scrollBy(-delta * speed) }
+    // Tab into a long list and the ring would otherwise land somewhere off-screen, which looks
+    // exactly like focus being broken. Focus walks up asking every ancestor that can; this is a
+    // scroll area saying it can.
+    onReveal { target -> scope.reveal(target) }
     scope.body()
     scope.finish()
 }
@@ -166,6 +173,35 @@ class ScrollScope<S : Any> internal constructor(
     /** Scroll by [delta] layout units, clamped. Positive moves the content up — later items. */
     fun scrollBy(delta: Double) {
         scroll.value = (scroll.value + delta).coerceIn(0.0, maxScroll)
+    }
+
+    /**
+     * Scroll the least amount that brings [target] fully into view. Does nothing if it already is.
+     *
+     * *Least* amount, and that is the behaviour worth being deliberate about: centring the target
+     * instead would move the list under a user who pressed down once and expected one row of
+     * movement. Scrolling only when something is actually off-screen is what makes keyboard
+     * navigation through a list feel like the list is holding still.
+     *
+     * Reads geometry untracked, from an event handler, like [maxScroll] — see this file's header
+     * for why that is sound rather than a shortcut.
+     */
+    fun reveal(target: Element) {
+        if (target.disposed || contentElement == null) return
+        val g = graph
+        val viewTop = g.topOf(viewport.element)
+        val viewBottom = g.bottomOf(viewport.element)
+        val targetTop = g.topOf(target)
+        val targetBottom = g.bottomOf(target)
+
+        // A target taller than the viewport can only have one edge aligned; the top is the useful
+        // one, since that is where a control's label is.
+        val delta = when {
+            targetTop < viewTop -> targetTop - viewTop
+            targetBottom > viewBottom -> minOf(targetBottom - viewBottom, targetTop - viewTop)
+            else -> return
+        }
+        scrollBy(delta)
     }
 
     fun scrollToTop() {

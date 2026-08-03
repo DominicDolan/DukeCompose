@@ -4,10 +4,15 @@ import com.dubulduke.layout.Direction
 import com.dubulduke.layout.Element
 import com.dubulduke.layout.ElementBuilder
 import com.dubulduke.layout.ElementTree
+import com.dubulduke.layout.FocusDirection
 import com.dubulduke.layout.FontRef
+import com.dubulduke.layout.focusNeighbour
+import com.dubulduke.layout.focusable
 import com.dubulduke.layout.interactive
 import com.dubulduke.layout.onClick
+import com.dubulduke.layout.onActivate
 import com.dubulduke.layout.onDrag
+import com.dubulduke.layout.onReveal
 import com.dubulduke.layout.onScroll
 import com.dubulduke.layout.style
 import com.dubulduke.reactivity.Graph
@@ -174,6 +179,47 @@ class ElementScope<S : Any> internal constructor(
      */
     fun onDrag(handler: (x: Double, y: Double) -> Unit) {
         builder.onDrag(handler)
+    }
+
+    /**
+     * Make this element a tab stop, and give it focus state readable with `graph.isFocused(element)`.
+     *
+     * Opt-in, and separate from [interactive]: a scroll area answers the pointer and must never be
+     * a tab stop, while a control is usually both.
+     */
+    fun focusable() {
+        builder.focusable()
+    }
+
+    /**
+     * What activating this element does from the keyboard. Implies [focusable].
+     *
+     * Unset, activation falls through to [onClick] — so a focusable button needs nothing extra to
+     * work from the keyboard.
+     */
+    fun onActivate(handler: () -> Unit) {
+        builder.onActivate(handler)
+    }
+
+    /**
+     * Override where directional navigation goes from this element. Implies [focusable].
+     *
+     * Resolved when navigation happens, not when it is registered, so it can name an element that
+     * does not exist yet — the same rule as every other cross-element reference here. Returning
+     * `null` means "nothing that way" rather than "fall back on geometry".
+     */
+    fun focusNeighbour(direction: FocusDirection, target: () -> Element?) {
+        builder.focusNeighbour(direction, target)
+    }
+
+    /**
+     * Let this element bring a descendant into view — implemented by scroll containers.
+     *
+     * Focus walks *up* from the newly focused element asking each ancestor, because a control must
+     * not have to know it is inside a scroll area or it could not be reused outside one.
+     */
+    fun onReveal(handler: (Element) -> Unit) {
+        builder.onReveal(handler)
     }
 
     /**
