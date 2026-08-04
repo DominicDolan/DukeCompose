@@ -259,12 +259,15 @@ arrays would buy a constant factor and most of that 74 MB; it would not fix anyt
 
 What does miss budget, in order of how much it matters:
 
-- **Recursion depth is a hard ceiling.** The evaluator is recursive by design — the call stack *is*
-  the topological order — so depth equals the longest dependency chain, at ~128–145 bytes of stack
-  per link. A default JVM stack manages ~3 900 links ≈ **2 000 chained rows, then
-  `StackOverflowError`.** 8 MB buys 64 000. Depth is linear in stack size, so a framework that owns
-  its layout thread can compute the requirement — but it has to be a stated constraint, not
-  something a list view discovers. `ChainDepthTest` measures it.
+- ~~**Recursion depth is a hard ceiling.**~~ **Fixed, as a stated constraint rather than a bigger
+  stack.** The evaluator is recursive by design — the call stack *is* the topological order — so
+  depth equals the longest dependency chain, at ~128–145 bytes of stack per link, and a default JVM
+  stack manages ~3 900 links ≈ 2 000 chained rows. That limit still exists; what has gone is
+  finding out about it through a `StackOverflowError`. `Graph.maxChainDepth` refuses first and names
+  the chain, `layoutThread(maxChainDepth = N)` sizes a thread from a worst-case chain length (linear,
+  so it is arithmetic), and marking — which had the same depth and overflowed inside the *write* —
+  is now iterative. `ChainDepthTest` measures the ceiling; `ScaleTest` runs its 10 000-link chained
+  scene through `layoutThread`.
 - **The read walk is O(elements) whatever changed** — 5.3 ms at 40k, 32% of a 60 Hz frame spent
   asking questions whose answers did not change. The largest avoidable cost in the system, and it
   belongs to the draw side.

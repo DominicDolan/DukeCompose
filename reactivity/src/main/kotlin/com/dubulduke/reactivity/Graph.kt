@@ -84,6 +84,40 @@ class Graph {
 
     val stats = Stats()
 
+    /**
+     * How deep a dependency chain this graph will evaluate before refusing, with
+     * [ChainTooDeepException] rather than `StackOverflowError`. See [ChainDepth] for the whole
+     * argument; the short version is that pull evaluation spends JVM stack proportional to chain
+     * length, so the limit exists whatever this field says, and the only question is whether it is
+     * a stated number or a crash.
+     *
+     * Initialised from the thread's declared budget ([layoutThread], [ChainDepth.declareBudget]),
+     * which is [ChainDepth.DEFAULT_MAX_CHAIN_DEPTH] on a thread nobody sized. Raise it only
+     * alongside the stack that has to carry it — [ChainDepth.stackForDepth] says how much that is.
+     * Set it to [Int.MAX_VALUE] to opt out entirely and take the `StackOverflowError`, which is
+     * what a benchmark measuring the real ceiling wants and nothing else does.
+     */
+    var maxChainDepth: Int = ChainDepth.budget.get()
+        set(value) {
+            require(value > 0) { "maxChainDepth must be positive, was $value" }
+            field = value
+        }
+
+    /**
+     * Links of dependency chain currently being resolved, which is the recursion depth of
+     * [updateIfNecessary] and therefore the JVM stack in use.
+     *
+     * Counted here rather than taken from [evalStack] because the two differ: a `CHECK` resolution
+     * walk recurses the full length of a chain through [updateIfNecessary] alone, recomputing
+     * nothing and pushing nothing, and that walk is exactly as capable of exhausting the stack.
+     *
+     * Restored by decrement rather than by `finally`. An exception escaping evaluation leaves this
+     * too high, which the reset in [read] corrects on the next top-level pull — the cheaper trade,
+     * since this sits on the hottest path in the system and the alternative pays a handler on every
+     * link to tidy up after a frame that has already failed.
+     */
+    private var depth: Int = 0
+
     // ---------------------------------------------------------------------------------
     // Construction
     // ---------------------------------------------------------------------------------
@@ -328,6 +362,7 @@ class Graph {
         checkThread()
         val dep = node(slot)
         require(!dep.isRef) { "$dep holds a reference; use readRef()" }
+        if (context == null) depth = 0   // a top-level pull; see [depth]
         settle(dep)
         return dep.value
     }
@@ -341,6 +376,7 @@ class Graph {
         checkThread()
         val dep = node(slot)
         require(dep.isRef) { "$dep holds a scalar; use read()" }
+        if (context == null) depth = 0
         settle(dep)
         return dep.ref
     }
@@ -405,6 +441,15 @@ class Graph {
         // one of its claims.
         if (n.flags and Flags.RECOMPUTING != 0) return
 
+        // One link of chain, and the only place both ways of descending one meet: the dependency
+        // walk below recurses here directly, and a recompute recurses here through its body's
+        // reads. Checked before descending, so the throw happens with stack left to build the
+        // message on.
+        if (++depth > maxChainDepth) {
+            depth--
+            throw chainTooDeep(n)
+        }
+
         if (n.flags and Flags.CHECK != 0) {
             // Consume CHECK up front rather than clearing flags at the end. A colour raised
             // after [recompute] has returned is a genuine new signal, and a blanket reset here
@@ -422,6 +467,29 @@ class Graph {
         }
         // DIRTY is consumed by recompute, which overwrites the colour field on entry.
         if (n.flags and Flags.DIRTY != 0) recompute(n)
+        depth--
+    }
+
+    /**
+     * The report [ChainTooDeepException] carries. Built here rather than in the exception so it
+     * can see [evalStack], which is the only record of what the walk was in the middle of.
+     */
+    private fun chainTooDeep(n: Node): ChainTooDeepException {
+        val chain = ArrayList<CycleMember>(evalStack.size)
+        for (e in evalStack) chain += CycleMember(e.slot, e.name)
+        val tail = chain.takeLast(8).joinToString("\n  ← ")
+        return ChainTooDeepException(
+            "Dependency chain deeper than maxChainDepth ($maxChainDepth) at $n.\n" +
+                (if (tail.isEmpty()) "" else "Innermost recomputes:\n  $tail\n") +
+                "This is the pull evaluator's stack ceiling, reached before the JVM's. Either " +
+                "shorten the chain — a list positioned by index rather than from its previous " +
+                "row is one link deep instead of one per row — or size the layout thread for the " +
+                "depth you need: layoutThread(maxChainDepth = N) wants " +
+                "${ChainDepth.BYTES_PER_LINK * ChainDepth.HEADROOM} bytes of stack per link.",
+            n.slot,
+            depth + 1,
+            chain,
+        )
     }
 
     private fun recompute(n: Node) {
@@ -438,6 +506,7 @@ class Graph {
         val body = n.compute
         var next = 0.0
         var nextRef: Any? = null
+        var produced = false
         try {
             when (body) {
                 is Computation -> next = with(body) { evaluate() }
@@ -445,6 +514,7 @@ class Graph {
                 is Solve -> with(body) { solve() }   // writes its claims via writeOutput
                 null -> error("recompute on an input node: $n")
             }
+            produced = true
         } finally {
             evalStack.removeAt(evalStack.size - 1)
             // A colour raised *while this node was running* is discarded, and that is correct
@@ -457,7 +527,15 @@ class Graph {
             // The mark that must *not* be lost arrives after this point: a node's own `commit`
             // propagating back around a cycle. That happens below, once RECOMPUTING is already
             // clear, which is why [updateIfNecessary] must not reset flags on its way out.
-            n.flags = Flags.NONE
+            //
+            // Unless the body *threw*, in which case this run answered nothing and the node must
+            // stay DIRTY. Clearing it would leave a node that never committed looking settled, so
+            // every later read would return the value it had before — for a node that has never
+            // run, zero. One failed expression would go on quietly reporting a wrong number for
+            // the life of the graph, which is precisely the failure mode this design exists to
+            // rule out. `commit` and `trimStaleDeps` below are skipped for the same reason; the
+            // next recompute rewinds the reconciliation cursor and redoes both.
+            n.flags = if (produced) Flags.NONE else Flags.DIRTY
             context = prevContext
         }
 
@@ -579,21 +657,51 @@ class Graph {
     }
 
     /**
+     * Worklist for [mark]. One instance, reused, so marking allocates nothing in steady state.
+     *
+     * Safe to share because marking runs to completion without calling anything that could mark
+     * again: [mark] touches only flags and link lists, never a compute body. Nested recomputes do
+     * not overlap here either — an inner recompute commits, drains this list and returns before
+     * the outer one commits.
+     */
+    private val markStack = ArrayList<Node>()
+
+    /**
      * Raise a node's colour and propagate `CHECK` downstream.
      *
      * The `>=` on the masked field is simultaneously the visited check and the "never
      * downgrade DIRTY to CHECK" rule, which is why [Flags.CHECK] must be 1 and
      * [Flags.DIRTY] must be 2.
+     *
+     * Iterative rather than recursive, and for the same reason [Graph.maxChainDepth] exists:
+     * marking descends the subscriber graph, so its depth is also the longest chain, and a write
+     * at the head of a long list would blow the stack in the *write* rather than in the read. That
+     * one is worth removing outright instead of budgeting, because unlike pull evaluation nothing
+     * here needs the call stack — the walk carries no state between levels beyond "raise CHECK",
+     * so a worklist is a straight substitution rather than a rewrite of the algorithm.
      */
-    private fun mark(n: Node, newState: Int) {
+    private fun mark(start: Node, newState: Int) {
+        if (!raise(start, newState)) return
+        pushSubscribers(start)
+        while (markStack.isNotEmpty()) {
+            val n = markStack.removeAt(markStack.size - 1)
+            if (raise(n, Flags.CHECK)) pushSubscribers(n)
+        }
+    }
+
+    /** Raise one node's colour. Returns whether it moved — i.e. whether to walk on past it. */
+    private fun raise(n: Node, newState: Int): Boolean {
         val f = n.flags
-        if (f and Flags.COLOUR >= newState) return
+        if (f and Flags.COLOUR >= newState) return false
         n.flags = (f and Flags.COLOUR.inv()) or newState
         stats.marked++
+        return true
+    }
 
+    private fun pushSubscribers(n: Node) {
         var l = n.subs
         while (l != null) {
-            mark(l.sub, Flags.CHECK)
+            markStack.add(l.sub)
             l = l.nextSub
         }
 
@@ -605,7 +713,7 @@ class Graph {
         while (c != null) {
             var cl = c.subs
             while (cl != null) {
-                mark(cl.sub, Flags.CHECK)
+                markStack.add(cl.sub)
                 cl = cl.nextSub
             }
             c = c.nextChild

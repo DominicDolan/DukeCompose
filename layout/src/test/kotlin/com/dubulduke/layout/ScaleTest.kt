@@ -1,5 +1,6 @@
 package com.dubulduke.layout
 
+import com.dubulduke.reactivity.layoutThread
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -196,13 +197,20 @@ class ScaleTest {
         )
     }
 
-    /** Run [body] with a stack big enough that a 40k-element chain does not overflow. */
+    /**
+     * Run [body] on a thread sized for the 40k chained scene's ~10 000-link chain.
+     *
+     * This used to be a hand-rolled `Thread(…, 256 MB)` — a number picked because smaller ones
+     * crashed. It is now [layoutThread], which is the same thing with the arithmetic done the other
+     * way round: state the depth, get the stack. Graphs built inside adopt the matching
+     * [Graph.maxChainDepth], so the deep scene is measured with the ceiling *raised* rather than
+     * with it disabled, which is what a host shipping a chained list would actually do.
+     */
     private fun onBigStack(body: () -> Unit) {
         var failure: Throwable? = null
-        val t = Thread(null, { try { body() } catch (e: Throwable) { failure = e } },
-            "scale", 256L shl 20)
-        t.start()
-        t.join()
+        layoutThread(name = "scale", maxChainDepth = 100_000) {
+            try { body() } catch (e: Throwable) { failure = e }
+        }.join()
         failure?.let { throw it }
     }
 

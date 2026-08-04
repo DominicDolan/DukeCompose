@@ -72,13 +72,23 @@ g.read(width)                        // does not re-measure
   unchanged value stops the propagation entirely.
 - **Pull evaluation.** The call stack is the topological order; it is never computed. Solves
   the diamond problem — the join of a diamond evaluates exactly once and never observes a
-  half-updated world. **The price is a hard limit on chain length**: recursion depth equals the
-  longest dependency chain at ~128–145 bytes of JVM stack per link, so a default thread stack
-  settles about 3 900 nodes deep and then throws `StackOverflowError`. 8 MB buys ~64 000, and
-  depth is *linear* in stack size, so a host that owns its layout thread can size it from a known
-  worst case. It is a real constraint rather than a theoretical one — an ordinary list where each
-  row sits below the previous one is two chain nodes per row. Measured in `:layout`'s
-  `ChainDepthTest`; see `layout-design.md` §11.2.
+  half-updated world. **The price is a limit on chain length**: recursion depth equals the longest
+  dependency chain at ~128–145 bytes of JVM stack per link, so a default thread stack settles a few
+  thousand nodes deep. It is a real constraint rather than a theoretical one — an ordinary list
+  where each row sits below the previous one is two chain nodes per row, so a default stack caps
+  such a list at roughly 2 000 rows.
+- **A stated ceiling rather than a crash** (`ChainDepth`). The limit above exists whatever anyone
+  does about it; what is avoidable is finding out through a `StackOverflowError` at whatever depth
+  the JIT happened to leave the frames at. `Graph.maxChainDepth` refuses first, with a
+  `ChainTooDeepException` that names the chain and both ways out, and
+  `layoutThread(maxChainDepth = N)` sizes a thread from a worst-case chain length — arithmetic
+  rather than tuning, because depth is *linear* in stack size and 8 MB buys ~64 000 links. The
+  default budget sits under the *lowest* depth a default stack has been seen to carry, since a
+  budget above that loses the race on precisely the cold frames where it matters. Measured in
+  `:layout`'s `ChainDepthTest`, exercised in this module's; see `layout-design.md` §11.2.
+- **Marking is iterative.** It descends the subscriber graph, so its depth was the chain length
+  too — and it overflowed inside `setInput`, where no evaluation budget could have caught it.
+  Nothing in the walk needs the call stack, so it uses a reused worklist and allocates nothing.
 - **Dynamic dependencies.** A conditional that stops reading a node stops depending on it,
   and the reverse edge is removed.
 - **Cycle detection.** Absent from Solid entirely (a cyclic Solid graph is a stack

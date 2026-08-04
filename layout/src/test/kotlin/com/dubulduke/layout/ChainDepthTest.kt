@@ -32,6 +32,11 @@ class ChainDepthTest {
         val t = Thread(null, {
             ok = try {
                 val g = Graph()
+                // Opt out of the budget. This test is the thing the budget is *derived from* — it
+                // measures where the JVM stack actually runs out — so leaving the check in would
+                // have it measure `ChainDepth.DEFAULT_MAX_CHAIN_DEPTH` and report it as a property
+                // of the machine. Nothing outside a probe like this one should do this.
+                g.maxChainDepth = Int.MAX_VALUE
                 var prev = g.input(1.0, "in")
                 for (i in 0 until n) {
                     val p = prev
@@ -111,6 +116,7 @@ class ChainDepthTest {
             var out = 0.0
             val t = Thread(null, {
                 val g = Graph()
+                g.maxChainDepth = Int.MAX_VALUE
                 val head = g.input(1.0, "in")
                 var prev = head
                 for (i in 0 until n) {
