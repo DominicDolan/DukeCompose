@@ -4,6 +4,7 @@ import com.dubulduke.reactivity.Graph
 import com.dubulduke.reactivity.RefComputation
 import com.dubulduke.reactivity.RefEquality
 import com.dubulduke.reactivity.Slot
+import com.dubulduke.reactivity.nodeName
 
 /**
  * The element tree, and the id index that `query` resolves against.
@@ -54,7 +55,7 @@ class ElementTree(
         // it, where `list.[3].label` would by then mean something else.
         val name = id ?: key?.let { "{$it}" } ?: if (parent == null) "root" else "[$index]"
         val path = if (parent == null) name else "${parent.path}.$name"
-        val slot = graph.refInput(emptyList<Element>(), "$path.children")
+        val slot = graph.refInput(emptyList<Element>(), nodeName { "$path.children" })
         val e = Element(parent, index, id, key, path, slot)
         if (id != null) bind(id, e)
         return e
@@ -70,7 +71,7 @@ class ElementTree(
         // `graph.setRefInput(ids[id]!!, e)`, which is exactly why the binding is a node.
         val existing = ids[id]
         check(existing == null) { "duplicate id '$id': ${graph.readRef(existing!!)} and $e" }
-        ids[id] = graph.refInput(e, "#$id")
+        ids[id] = graph.refInput(e, nodeName { "#$id" })
     }
 
     /**
@@ -313,12 +314,12 @@ class ElementBuilder internal constructor(
 ) {
     /** The horizontal axis. Exactly one call per element. */
     fun h(startIsLow: Boolean = true, build: AxisBuilder.() -> Unit) {
-        element.setAxis(true, tree.axisFor(element, "${element.path}.h", startIsLow, build))
+        element.setAxis(true, tree.axisFor(element, nodeName { "${element.path}.h" }, startIsLow, build))
     }
 
     /** The vertical axis. Exactly one call per element. */
     fun v(startIsLow: Boolean = true, build: AxisBuilder.() -> Unit) {
-        element.setAxis(false, tree.axisFor(element, "${element.path}.v", startIsLow, build))
+        element.setAxis(false, tree.axisFor(element, nodeName { "${element.path}.v" }, startIsLow, build))
     }
 
     fun classes(vararg names: String) {
@@ -335,7 +336,7 @@ class ElementBuilder internal constructor(
         check(element.content == null) { "$element already has content" }
         val g = tree.graph
         val c = Content(
-            textSlot = g.refInput(text, "${element.path}.text", RefEquality.EQUALS),
+            textSlot = g.refInput(text, nodeName { "${element.path}.text" }, RefEquality.EQUALS),
             fontSlot = g.refInput(font, "${element.path}.font", RefEquality.IDENTITY),
             metrics = tree.textMetrics,
         )
@@ -357,7 +358,7 @@ class ElementBuilder internal constructor(
         check(element.content == null) { "$element already has content" }
         val g = tree.graph
         val c = Content(
-            textSlot = g.deriveRef("${element.path}.text", RefEquality.EQUALS, text),
+            textSlot = g.deriveRef(nodeName { "${element.path}.text" }, RefEquality.EQUALS, text),
             fontSlot = g.refInput(font, "${element.path}.font", RefEquality.IDENTITY),
             metrics = tree.textMetrics,
         )

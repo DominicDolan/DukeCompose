@@ -2,6 +2,7 @@ package com.dubulduke.layout
 
 import com.dubulduke.reactivity.Graph
 import com.dubulduke.reactivity.Slot
+import com.dubulduke.reactivity.nodeName
 
 /**
  * Keyboard focus. `dsl-and-engine.md` §7, the keyboard half.
@@ -78,7 +79,7 @@ class Focus internal constructor(
  */
 fun ElementBuilder.focusable(): Focus {
     element.focus?.let { return it }
-    val f = Focus(focusedSlot = tree.graph.input(0.0, "${element.path}.focused"))
+    val f = Focus(focusedSlot = tree.graph.input(0.0, nodeName { "${element.path}.focused" }))
     element.focus = f
     return f
 }

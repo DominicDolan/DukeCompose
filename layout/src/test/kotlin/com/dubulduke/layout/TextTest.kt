@@ -282,7 +282,7 @@ class TextTest {
     }
 
     @Test
-    fun `text and font nodes are named after the element`() {
+    fun `text and font nodes are named after the element`() = withNodeNames {
         val label = textLabel("x")
         assertEquals("root.label.text", g.nameOf(label.content!!.textSlot))
         assertEquals("root.label.font", g.nameOf(label.content!!.fontSlot))

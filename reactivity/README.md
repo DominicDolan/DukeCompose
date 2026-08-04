@@ -90,6 +90,12 @@ g.read(width)                        // does not re-measure
   default budget sits under the *lowest* depth a default stack has been seen to carry, since a
   budget above that loses the race on precisely the cold frames where it matters. Measured in
   `:layout`'s `ChainDepthTest`, exercised in this module's; see `layout-design.md` §11.2.
+- **Diagnostic names are optional** (`NodeNames`). Every node can carry a name like
+  `ui.list.row412.v.size`, which is what makes a cycle report readable and a governor's totality
+  error actionable — and which costs 24% of the heap at 40 000 elements. `NodeNames.enabled = false`
+  or `-Dduke.nodeNames=false` drops it: 300 → 229 bytes per node, and composition roughly halves,
+  because `nodeName { }` is `inline` and a disabled build never concatenates the string at all. On
+  by default; a release build opts out.
 - **Marking is iterative.** It descends the subscriber graph, so its depth was the chain length
   too — and it overflowed inside `setInput`, where no evaluation budget could have caught it.
   Nothing in the walk needs the call stack, so it uses a reused worklist and allocates nothing.

@@ -2,6 +2,7 @@ package com.dubulduke.layout
 
 import com.dubulduke.reactivity.Graph
 import com.dubulduke.reactivity.Slot
+import com.dubulduke.reactivity.nodeName
 
 /**
  * Pointer state and event dispatch. `dsl-and-engine.md` §7.
@@ -61,8 +62,8 @@ fun ElementBuilder.interactive(): Interaction {
     element.interaction?.let { return it }
     val g = tree.graph
     val i = Interaction(
-        hoveredSlot = g.input(0.0, "${element.path}.hovered"),
-        pressedSlot = g.input(0.0, "${element.path}.pressed"),
+        hoveredSlot = g.input(0.0, nodeName { "${element.path}.hovered" }),
+        pressedSlot = g.input(0.0, nodeName { "${element.path}.pressed" }),
     )
     element.interaction = i
     return i

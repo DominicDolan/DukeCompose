@@ -8,6 +8,7 @@ import com.dubulduke.layout.heightOf
 import com.dubulduke.layout.onReveal
 import com.dubulduke.layout.topOf
 import com.dubulduke.layout.widthOf
+import com.dubulduke.reactivity.nodeName
 
 /**
  * Scrolling: a clipped viewport over content that is taller than it is.
@@ -66,7 +67,7 @@ fun <S : Any> ElementScope<S>.scrollArea(
     // there is no element to bubble up from.
     interactive()
 
-    val scope = ScrollScope(this, graph.signal(0.0, "${element.path}.scroll"), speed)
+    val scope = ScrollScope(this, graph.signal(0.0, nodeName { "${element.path}.scroll" }), speed)
     onScroll { delta -> scope.scrollBy(-delta * speed) }
     // Tab into a long list and the ring would otherwise land somewhere off-screen, which looks
     // exactly like focus being broken. Focus walks up asking every ancestor that can; this is a

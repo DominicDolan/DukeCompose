@@ -142,7 +142,7 @@ class FlexTest {
     // -------------------------------------------------------------------------------
 
     @Test
-    fun `written without hoisting, flex-grow is a genuine cycle`() {
+    fun `written without hoisting, flex-grow is a genuine cycle`() = withNodeNames {
         // §6.2's starting point, so the claim that hoisting fixes something is demonstrated
         // rather than asserted. Each child computes the free pool itself, which means reading
         // every sibling's width — including the other growing ones.
@@ -373,7 +373,7 @@ class FlexTest {
     }
 
     @Test
-    fun `hoisted nodes are named after their container`() {
+    fun `hoisted nodes are named after their container`() = withNodeNames {
         g.diagnostics = DiagnosticSink.Throwing
         val (_, flex) = row(width = 300.0) { grow(1.0, "a") { crossFixed() } }
         assertEquals("row.freeSpace", g.nameOf(flex.freeSpace))

@@ -1,5 +1,6 @@
 package com.dubulduke.layout
 
+import com.dubulduke.reactivity.NodeNames
 import com.dubulduke.reactivity.layoutThread
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -236,6 +237,66 @@ class ScaleTest {
             try { body() } catch (e: Throwable) { failure = e }
         }.join()
         failure?.let { throw it }
+    }
+
+    /**
+     * `deferred.md` P4's cheap half: **what do the diagnostic names cost?**
+     *
+     * §11.2 measured 281 bytes per node and 74 MB at 40 000 elements and observed that much of it
+     * is incidental, every node carrying a `String` like `ui.list.row412.v.size` so that a cycle
+     * report can name it. This puts a number on "much", because the number is what decides whether
+     * the switch is worth having — and it measures composition time as well as heap, since
+     * [nodeName] is inlined and a disabled build never builds the string at all.
+     *
+     * Heap, not `nodeCount`, so it includes the backing `byte[]` each `String` carries. Measured on
+     * a scene that is *retained* while `usedHeapMb` forces its collections, which is the only way
+     * the difference means anything.
+     */
+    @Test
+    fun `diagnostic names cost a measurable share of the heap`() = onBigStack {
+        warmUp()
+        val rows = rowsForElements(40_000)
+
+        fun measureNames(enabled: Boolean): Triple<Double, Double, Int> {
+            NodeNames.enabled = enabled
+            val before = usedHeapMb()
+            val t0 = System.nanoTime()
+            var scene: Scene? = buildScene(rows, chained = false)
+            val composeMs = (System.nanoTime() - t0) / 1e6
+            scene!!.layoutAll()
+            val heap = usedHeapMb() - before
+            val nodes = scene.g.nodeCount
+            scene = null
+            return Triple(heap, composeMs, nodes)
+        }
+
+        val was = NodeNames.enabled
+        try {
+            val (onHeap, onCompose, nodes) = measureNames(true)
+            val (offHeap, offCompose, _) = measureNames(false)
+
+            println(
+                """
+                |
+                | Diagnostic node names at $nodes nodes (deferred.md P4)
+                | ---------------------------------------------------------------------
+                | names on   ${"%6.1f".format(onHeap)} MB  ${"%6.0f".format(onHeap * 1024 * 1024 / nodes)} B/node   compose ${"%6.1f".format(onCompose)} ms
+                | names off  ${"%6.1f".format(offHeap)} MB  ${"%6.0f".format(offHeap * 1024 * 1024 / nodes)} B/node   compose ${"%6.1f".format(offCompose)} ms
+                | saved      ${"%6.1f".format(onHeap - offHeap)} MB = ${"%.0f".format(100 * (onHeap - offHeap) / onHeap)}%
+                """.trimMargin()
+            )
+
+            // Deliberately loose: heap measurement through `Runtime` is noisy and this is a
+            // regression guard, not a specification. What it defends is that the switch does
+            // something — a `nodeName { }` call site left un-wrapped would show up as the saving
+            // quietly shrinking.
+            assertTrue(
+                offHeap < onHeap * 0.9,
+                "names off saved only ${onHeap - offHeap} MB of $onHeap; are the call sites wrapped?"
+            )
+        } finally {
+            NodeNames.enabled = was
+        }
     }
 
     @Test

@@ -4,6 +4,7 @@ import com.dubulduke.reactivity.Computation
 import com.dubulduke.reactivity.Graph
 import com.dubulduke.reactivity.GovernorHandle
 import com.dubulduke.reactivity.Slot
+import com.dubulduke.reactivity.nodeName
 
 /** Which of an element's two axes something refers to. */
 enum class Direction { HORIZONTAL, VERTICAL }
@@ -183,7 +184,7 @@ fun ElementBuilder.flexRow(
     // Hoisted before the children are built, so their expressions can capture the handles.
     // Both read the *published child list*, so adding or removing an item invalidates them
     // (§8.7) rather than only a change in some existing item's numbers.
-    val freeSpace = g.derive("${container.path}.freeSpace") {
+    val freeSpace = g.derive(nodeName { "${container.path}.freeSpace" }) {
         var used = 0.0
         for (c in childrenOf(container)) {
             // The fixed/growing split is a *structural* property — which of `fixed` and `grow`
@@ -197,7 +198,7 @@ fun ElementBuilder.flexRow(
         }
         sizeOf(container.axis(direction)) - used
     }
-    val totalFlex = g.derive("${container.path}.totalFlex") {
+    val totalFlex = g.derive(nodeName { "${container.path}.totalFlex" }) {
         var sum = 0.0
         for (c in childrenOf(container)) {
             val f = c.flexSlot
@@ -239,7 +240,7 @@ private fun ElementBuilder.governedRow(
     // the honest reading of the situation rather than a workaround for that.
     if (items.isEmpty()) return row
 
-    val gov = g.governor(items.map { it.sizeSlot }, "${container.path}.flex") {
+    val gov = g.governor(items.map { it.sizeSlot }, nodeName { "${container.path}.flex" }) {
         // The outer part of the problem, resolved by the evaluator in the ordinary way: the
         // container's own main-axis size may come from its parent, and the fixed items' sizes are
         // their own expressions. Only the *inner* knot — how the remainder splits between
@@ -320,7 +321,7 @@ private fun ElementBuilder.shrinkRow(
     available: Computation,
     build: FlexScope.() -> Unit,
 ): FlexRow {
-    val contentSlot = g.input(0.0, "${container.path}.content")
+    val contentSlot = g.input(0.0, nodeName { "${container.path}.content" })
     val row = FlexRow(container, direction, FlexMode.SHRINK, null, null, null, contentSlot)
     val scope = FlexScope(this, row).apply(build)
     val items = scope.shrinking
@@ -329,7 +330,7 @@ private fun ElementBuilder.shrinkRow(
     // from the fixed items, and an input with no writer would sit at zero forever. Unlike the
     // governed path there is no "nothing is contested" shortcut, because the row's own size is
     // contested by construction.
-    val gov = g.governor(items.map { it.sizeSlot } + contentSlot, "${container.path}.shrink") {
+    val gov = g.governor(items.map { it.sizeSlot } + contentSlot, nodeName { "${container.path}.shrink" }) {
         val limit = available.run { evaluate() }
 
         // Fixed items keep ordinary expressions, so the claim set stays minimal and they are read
@@ -527,8 +528,8 @@ class FlexScope internal constructor(
         return owner.child(id) {
             val self = element
             val g = tree.graph
-            val basisSlot = g.derive("${self.path}.basis", basis)
-            val shrinkSlot = g.input(shrink, "${self.path}.shrink")
+            val basisSlot = g.derive(nodeName { "${self.path}.basis" }, basis)
+            val shrinkSlot = g.input(shrink, nodeName { "${self.path}.shrink" })
 
             val main: AxisBuilder.() -> Unit = {
                 origin {
@@ -541,7 +542,7 @@ class FlexScope internal constructor(
                     basisSlot = basisSlot,
                     shrinkSlot = shrinkSlot,
                     sizeSlot = claimable(Property.SIZE),
-                    minSlot = min?.let { g.derive("${self.path}.min", it) },
+                    minSlot = min?.let { g.derive(nodeName { "${self.path}.min" }, it) },
                 )
             }
 
@@ -583,7 +584,7 @@ class FlexScope internal constructor(
             val self = element
 
             val flexSlot = if (flex > 0.0) {
-                tree.graph.input(flex, "${self.path}.flex").also { self.flexSlot = it }
+                tree.graph.input(flex, nodeName { "${self.path}.flex" }).also { self.flexSlot = it }
             } else {
                 null
             }
@@ -619,8 +620,8 @@ class FlexScope internal constructor(
                         element = self,
                         flexSlot = flexSlot!!,
                         sizeSlot = claimable(Property.SIZE),
-                        minSlot = min?.let { tree.graph.derive("${self.path}.min", it) },
-                        maxSlot = max?.let { tree.graph.derive("${self.path}.max", it) },
+                        minSlot = min?.let { tree.graph.derive(nodeName { "${self.path}.min" }, it) },
+                        maxSlot = max?.let { tree.graph.derive(nodeName { "${self.path}.max" }, it) },
                     )
                 }
             }

@@ -3,6 +3,7 @@ package com.dubulduke.layout
 import com.dubulduke.reactivity.Graph
 import com.dubulduke.reactivity.RefEquality
 import com.dubulduke.reactivity.Slot
+import com.dubulduke.reactivity.nodeName
 
 /**
  * An element's style: an application-owned object, plus the tracked block that fills it in.
@@ -58,7 +59,7 @@ fun <S : Any> ElementBuilder.style(target: S, styler: S.() -> Unit): S {
     check(element.styleNode == null) { "$element already has a style" }
     element.styleNode = StyleNode(
         target = target,
-        slot = tree.graph.deriveRef("${element.path}.style", RefEquality.ALWAYS) {
+        slot = tree.graph.deriveRef(nodeName { "${element.path}.style" }, RefEquality.ALWAYS) {
             target.styler()
             target
         },

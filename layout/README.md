@@ -283,6 +283,10 @@ What does miss budget, in order of how much it matters:
   work. Note that this is the case struct-of-arrays would fix, and that the flat-throughput
   measurement below argues only about *sequential* access.
 - **281 bytes per node**, partly incidental: every node carries a `String` name for diagnostics.
+  **Now a switch** — `NodeNames.enabled` / `-Dduke.nodeNames=false` takes the 40k scene from 300 to
+  229 B/node (77.2 → 58.9 MB, 24%) and roughly halves composition (166 → 80 ms), since `nodeName { }`
+  is inlined and a disabled build never builds the string. On by default, because a cycle report
+  without names is a list of integers.
 
 Comfortably in budget to ~10 000 elements either shape. 40 000 exceeds a 60 Hz frame on full
 invalidation — but 40 000 *live* elements means no virtualisation, and virtualisation produces the

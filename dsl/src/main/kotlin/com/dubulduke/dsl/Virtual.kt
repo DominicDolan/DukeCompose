@@ -6,6 +6,7 @@ import com.dubulduke.layout.ElementTree
 import com.dubulduke.layout.Region
 import com.dubulduke.layout.heightOf
 import com.dubulduke.reactivity.RefEquality
+import com.dubulduke.reactivity.nodeName
 import kotlin.math.ceil
 import kotlin.math.floor
 
@@ -114,7 +115,7 @@ private fun <S : Any, T> virtualise(
     body: ElementScope<S>.(VirtualItem<T>) -> Unit,
 ): Element {
     val pitch = rowHeight + gap
-    val count = scroll.graph.signal(0.0, "${scroll.element.path}.count")
+    val count = scroll.graph.signal(0.0, nodeName { "${scroll.element.path}.count" })
 
     lateinit var contentScope: ElementScope<S>
     val content = scroll.content(id = id) {
@@ -332,7 +333,7 @@ private class VirtualRegion<S : Any, T>(
     ): Element {
         val g = tree.graph
         val data = g.refSignal<Any?>(item, "${container.path}.{$k}", RefEquality.EQUALS)
-        val position = g.signal(absolute.toDouble(), "${container.path}.{$k}.index")
+        val position = g.signal(absolute.toDouble(), nodeName { "${container.path}.{$k}.index" })
 
         val built = edit.create(key = k) {
             val rowScope = ElementScope(

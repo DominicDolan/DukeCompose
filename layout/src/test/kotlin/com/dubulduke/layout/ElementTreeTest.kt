@@ -47,7 +47,7 @@ class ElementTreeTest {
     }
 
     @Test
-    fun `paths name graph nodes after their position in the tree`() {
+    fun `paths name graph nodes after their position in the tree`() = withNodeNames {
         tree.root("app") {
             box()
             child("panel") { box(); child { box() } }
@@ -290,7 +290,7 @@ class ElementTreeTest {
     }
 
     @Test
-    fun `a missing id is a layout-time error naming the slot that asked`() {
+    fun `a missing id is a layout-time error naming the slot that asked`() = withNodeNames {
         tree.root("root") {
             h { origin { 0.0 }; size { widthOf(tree.query("nope")) } }
             v { origin { 0.0 }; size { 10.0 } }

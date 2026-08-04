@@ -112,7 +112,7 @@ class JsonTest {
     // -------------------------------------------------------------------------------
 
     @Test
-    fun `derivation reports where each slot's value came from`() {
+    fun `derivation reports where each slot's value came from`() = withNodeNames {
         screen()
         val json = tree.dumpJson(includeDerivation = true)
 
