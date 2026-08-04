@@ -268,9 +268,12 @@ What does miss budget, in order of how much it matters:
   so it is arithmetic), and marking — which had the same depth and overflowed inside the *write* —
   is now iterative. `ChainDepthTest` measures the ceiling; `ScaleTest` runs its 10 000-link chained
   scene through `layoutThread`.
-- **The read walk is O(elements) whatever changed** — 5.3 ms at 40k, 32% of a 60 Hz frame spent
-  asking questions whose answers did not change. The largest avoidable cost in the system, and it
-  belongs to the draw side.
+- ~~**The read walk is O(elements) whatever changed**~~ — 5.3 ms at 40k, 32% of a 60 Hz frame spent
+  asking questions whose answers did not change. **Fixed by virtualisation** rather than by anything
+  on the draw side: `:dsl`'s `virtualContent` builds only the rows near the viewport, so a
+  10 000-item list and a 100-item list produce the same 10 elements and the same 93 graph nodes.
+  Uniform row pitch is the enabling contract, and it positions rows by index — which is the indexed
+  shape above, so this and the chain-depth ceiling were the same fix.
 - **Marking is not free at scale.** A 40k resize is 50 000 recomputes plus **90 000 marks**, and
   costs 2.5× per recompute what a full layout does. Chain depth makes it 1.8× worse again.
 - **281 bytes per node**, partly incidental: every node carries a `String` name for diagnostics.

@@ -193,6 +193,42 @@ frame's.
 `scroll` is exposed as a `Signal`, so scroll-to-top on a filter change or an animated scroll are
 ordinary writes.
 
+### Long lists — `virtualContent`
+
+```kotlin
+scrollArea(id = "inbox") {
+    layout { fillWidth(12.0); top { 16.0 }; height { 340.0 } }
+
+    virtualContent({ rows }, key = { it.id }, rowHeight = 40.0, gap = 8.0) { row ->
+        style { colour = if (row.index % 2 == 0) EVEN else ODD }
+        label({ row.value.title }, font)
+    }
+}
+```
+
+`content { } + forEach` builds every row. That is right when rows size themselves to their own
+content, and it is `deferred.md` P2 when they do not: §11.2 measured a settled 40 000-element scene
+at **5.3 ms just to read every rectangle**, a third of a 60 Hz frame spent asking questions whose
+answers had not changed. Clipping already skips *drawing* the off-screen rows, but a clipped row is
+still a live element with live slots — culling answers "what do I draw", and only virtualisation
+answers "what exists".
+
+`virtualContent` builds the rows near the viewport and nothing else. A 10 000-item list and a
+100-item list produce the same 10 elements and the same 93 graph nodes; `VirtualTest` asserts that
+equality rather than a threshold.
+
+**Uniform pitch is the whole contract**, and it is not a simplification. The content's height has to
+be knowable *without measuring the children*, or `maxScroll` would need the rows built in order to
+decide which rows to build. Under `rowHeight` + `gap` it is arithmetic: `count × pitch − gap`. That
+same contract positions rows **by index against the pitch** rather than from the previous row's
+bottom — which is §11.2's *indexed* shape, one link of chain depth instead of one per row. P2 and
+the chain-depth ceiling turn out to be the same fix.
+
+What it gives up is honest and is why it is opt-in: a row that is not built does not exist. It is
+not hit-testable, not in the tab order, and `reveal` cannot bring it into view. `row.index` and
+`row.value` are both **tracked**, so a row that survives a scroll or an insertion is repositioned by
+a signal write rather than by a rebuild.
+
 ## Styling — functions, not classes
 
 A "class" is an **extension function on the style type**. There is no framework concept behind it:

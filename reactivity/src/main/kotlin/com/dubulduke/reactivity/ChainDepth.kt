@@ -70,13 +70,20 @@ object ChainDepth {
      *
      * So the budget has to sit under the *low* end, or on exactly the runs where the depth matters
      * most — the first frames, before the JIT has been anywhere — the crash wins the race and the
-     * diagnostic never prints. 1 250 links is about 600 chained rows: comfortably more than any
-     * list that should be un-virtualised, comfortably less than the floor.
+     * diagnostic never prints.
+     *
+     * And under it by a real margin, because a link is not one frame. `ChainDepthTest` measures the
+     * evaluator settling a chain of *its own* nodes; a chain of layout slots carries the DSL's
+     * frames too — a `LayoutExpression`, a `LayoutScope` getter, an axis accessor — so the same
+     * budget buys fewer links there. Measured through `:dsl`, a `prev`-chained `scrollArea` whose
+     * content height pulls the last row overflows a default stack at roughly 1 400 links, which
+     * 1 250 does not reliably beat. 800 does, and is still about 400 chained rows: more than any
+     * list that should be un-virtualised (see `virtualContent`), and well under the floor.
      *
      * Raising it is a one-line, supported thing to do ([Graph.maxChainDepth]) — but it should be
      * done alongside the stack that carries it, which is what [layoutThread] is for.
      */
-    const val DEFAULT_MAX_CHAIN_DEPTH: Int = 1_250
+    const val DEFAULT_MAX_CHAIN_DEPTH: Int = 800
 
     /** Chain depth a thread with [stackBytes] of stack can carry, with [HEADROOM] left over. */
     fun depthForStack(stackBytes: Long): Int {
