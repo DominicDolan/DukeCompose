@@ -69,7 +69,11 @@ g.read(width)                        // does not re-measure
   of the same dependency are O(1) rather than a list scan.
 - **Two-colour marking.** A write marks direct subscribers `DIRTY` and everything further
   downstream `CHECK`. Resolving a `CHECK` is a pull, and a node that recomputes to an
-  unchanged value stops the propagation entirely.
+  unchanged value stops the propagation entirely. Colours are raised when a node is **pushed** onto
+  the marking worklist rather than when it is popped, which keeps the walk proportional to the nodes
+  marked rather than to the edges traversed — a layout graph is full of small diamonds, so a node is
+  typically reachable by several paths. `settle` and the `CHECK` walk both skip an uncoloured node
+  outright rather than calling into resolution to be told there is nothing to do.
 - **Pull evaluation.** The call stack is the topological order; it is never computed. Solves
   the diamond problem — the join of a diamond evaluates exactly once and never observes a
   half-updated world. **The price is a limit on chain length**: recursion depth equals the longest

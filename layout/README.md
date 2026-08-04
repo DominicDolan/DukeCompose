@@ -274,8 +274,14 @@ What does miss budget, in order of how much it matters:
   10 000-item list and a 100-item list produce the same 10 elements and the same 93 graph nodes.
   Uniform row pitch is the enabling contract, and it positions rows by index — which is the indexed
   shape above, so this and the chain-depth ceiling were the same fix.
-- **Marking is not free at scale.** A 40k resize is 50 000 recomputes plus **90 000 marks**, and
-  costs 2.5× per recompute what a full layout does. Chain depth makes it 1.8× worse again.
+- **Marking is not free at scale** — *reduced by 10–18%, then re-diagnosed.* A 40k resize is 50 000
+  recomputes plus **90 000 marks**. `ScaleTest` now times the marking pass on its own, which turns
+  the claim into a measurement: raising colours at push rather than at pop, skipping uncoloured
+  nodes in `settle` and the `CHECK` walk, and using raw arrays for the two evaluator stacks bought
+  10–18% on marking and 7–16% on the resize. What is left is **~55 ns per mark** — one cache miss
+  per node over a 78 MB array walked in subscriber order — so it is random access, not redundant
+  work. Note that this is the case struct-of-arrays would fix, and that the flat-throughput
+  measurement below argues only about *sequential* access.
 - **281 bytes per node**, partly incidental: every node carries a `String` name for diagnostics.
 
 Comfortably in budget to ~10 000 elements either shape. 40 000 exceeds a 60 Hz frame on full

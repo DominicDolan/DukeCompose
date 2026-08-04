@@ -61,6 +61,7 @@ class ScaleTest {
         val resizeMs: Double,
         val resizeComputes: Long,
         val resizeMarked: Long,
+        val markMs: Double,
         val walkOnlyMs: Double,
         val leafMs: Double,
         val leafComputes: Long,
@@ -167,6 +168,28 @@ class ScaleTest {
             }
         }
 
+        // The marking pass on its own. `setInput` propagates colours and recomputes nothing, so
+        // this is the whole of it and nothing else — which the `resize` column cannot say, since it
+        // is marking plus CHECK resolution plus recomputes plus the read walk, all in one number.
+        // Splitting them is what turns "marking is not free at scale" from an inference into a
+        // measurement. Alternating values, so every iteration is a real change rather than the
+        // no-op the equality test would otherwise make it.
+        val markMs = bestOf(iterations) { i ->
+            g.setInput(scene.viewportW, 1000.0 + (i % 2) * 40)
+            scene.layoutAll()      // settle again, so the next write has a clean graph to colour
+        }.let { _ ->
+            var best = Double.MAX_VALUE
+            for (i in 0 until iterations) {
+                scene.layoutAll()
+                val t0 = System.nanoTime()
+                g.setInput(scene.viewportW, 1000.0 + (i % 2) * 40)
+                val dt = (System.nanoTime() - t0) / 1e6
+                if (dt < best) best = dt
+            }
+            best
+        }
+        scene.layoutAll()
+
         // The floor: read every rect with nothing changed at all. Pure cost of asking.
         val walkOnlyMs = bestOf(iterations) { scene.layoutAll() }
 
@@ -191,6 +214,7 @@ class ScaleTest {
             resizeMs = resizeMs,
             resizeComputes = resizeComputes,
             resizeMarked = resizeMarked,
+            markMs = markMs,
             walkOnlyMs = walkOnlyMs,
             leafMs = leafMs,
             leafComputes = leafComputes,
@@ -244,11 +268,12 @@ class ScaleTest {
         sb.appendLine(" " + "-".repeat(104))
         for (r in results) {
             sb.appendLine(
-                " %6d %-8s full %7d ea %6.2f ms = %4.0f ns/ea | resize %6d ea + %6d marks %6.2f ms = %4.0f ns/ea | leaf %d ea %.4f ms".format(
+                " %6d %-8s full %7d ea %6.2f ms = %4.0f ns/ea | resize %6d ea + %6d marks %6.2f ms = %4.0f ns/ea | mark alone %6.2f ms = %4.0f ns/mark | leaf %d ea %.4f ms".format(
                     r.elements, r.shape,
                     r.fullComputes, r.fullMs, r.fullMs * 1e6 / r.fullComputes,
                     r.resizeComputes, r.resizeMarked, r.resizeMs,
                     (r.resizeMs - r.walkOnlyMs) * 1e6 / r.resizeComputes,
+                    r.markMs, r.markMs * 1e6 / r.resizeMarked,
                     r.leafComputes, r.leafMs,
                 )
             )

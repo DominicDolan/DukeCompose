@@ -75,8 +75,16 @@ class Graph {
     /** The node currently running its compute. Reads inside it become its dependencies. */
     private var context: Node? = null
 
-    /** Nodes currently on the evaluation stack, innermost last. Gives cycle membership. */
-    private val evalStack = ArrayList<Node>()
+    /**
+     * Nodes currently on the evaluation stack, innermost last. Gives cycle membership.
+     *
+     * A raw array for the same reason [markStack] is one: it is pushed and popped once per
+     * recompute — 180 000 times on a cold 40k scene — and it exists only so that a cycle can be
+     * *named*, which is a diagnostic. Paying `ArrayList`'s bounds check and `removeAt` shuffle on
+     * every recompute for that is the wrong trade.
+     */
+    private var evalStack = arrayOfNulls<Node>(64)
+    private var evalTop = 0
 
     private val owningThread: Thread = Thread.currentThread()
 
@@ -403,7 +411,8 @@ class Graph {
         val owner = fw ?: dep
 
         if (owner.compute != null) {
-            if (owner.flags and Flags.RECOMPUTING != 0) {
+            val f = owner.flags
+            if (f and Flags.RECOMPUTING != 0) {
                 // Re-entry: `owner` is already on the evaluation stack, so this read closes
                 // a cycle. Record the edge anyway — it is real, and future invalidation
                 // needs it — then break the cycle.
@@ -411,7 +420,12 @@ class Graph {
                 reportCycle(owner)
                 return
             }
-            updateIfNecessary(owner)
+            // Uncoloured means settled, and [updateIfNecessary] would do nothing but say so.
+            // Worth testing here rather than there because this is the read walk's whole
+            // steady-state cost: §11.2 measured 5.3 ms at 40 000 elements *with nothing changed*,
+            // which is four reads per element that each reach exactly this branch. A call, a
+            // depth check and two more flag tests, times 160 000.
+            if (f and Flags.COLOUR != 0) updateIfNecessary(owner)
         }
 
         if (c != null) {
@@ -460,7 +474,12 @@ class Graph {
             var d = n.deps
             while (d != null) {
                 val dep = d.dep.firewall ?: d.dep     // settle the governor, not the output
-                if (dep.compute != null) updateIfNecessary(dep)
+                // Same test as in [settle], and it is worth more here: this is the walk §11.2
+                // called "the CHECK resolution pass visiting far more nodes than actually run".
+                // A resize at 40 000 marks 90 000 nodes and runs 50 000 of them, so the walk
+                // spends most of its time confirming that a dependency is fine — and an uncoloured
+                // dependency is fine by inspection, without a call and without descending.
+                if (dep.compute != null && dep.flags and Flags.COLOUR != 0) updateIfNecessary(dep)
                 if (n.flags and Flags.DIRTY != 0) break
                 d = d.nextDep
             }
@@ -475,8 +494,8 @@ class Graph {
      * can see [evalStack], which is the only record of what the walk was in the middle of.
      */
     private fun chainTooDeep(n: Node): ChainTooDeepException {
-        val chain = ArrayList<CycleMember>(evalStack.size)
-        for (e in evalStack) chain += CycleMember(e.slot, e.name)
+        val chain = ArrayList<CycleMember>(evalTop)
+        for (i in 0 until evalTop) evalStack[i]!!.let { chain += CycleMember(it.slot, it.name) }
         val tail = chain.takeLast(8).joinToString("\n  ← ")
         return ChainTooDeepException(
             "Dependency chain deeper than maxChainDepth ($maxChainDepth) at $n.\n" +
@@ -498,7 +517,8 @@ class Graph {
         n.depsTail = null            // rewind the reconciliation cursor
         n.depGen++                   // new pass generation
         n.flags = Flags.RECOMPUTING  // also consumes CHECK/DIRTY: this run answers them
-        evalStack.add(n)
+        if (evalTop == evalStack.size) evalStack = evalStack.copyOf(evalTop * 2)
+        evalStack[evalTop++] = n
         n.recomputes++
         stats.recomputed++
 
@@ -516,7 +536,7 @@ class Graph {
             }
             produced = true
         } finally {
-            evalStack.removeAt(evalStack.size - 1)
+            evalStack[--evalTop] = null
             // A colour raised *while this node was running* is discarded, and that is correct
             // rather than merely convenient: it can only have come from a dependency this node
             // read during this very pass, whose fresh value is therefore already folded into
@@ -657,14 +677,25 @@ class Graph {
     }
 
     /**
-     * Worklist for [mark]. One instance, reused, so marking allocates nothing in steady state.
+     * Worklist for [mark]. One instance, reused and never shrunk, so marking allocates nothing
+     * once a graph has seen its worst frame.
+     *
+     * A raw array rather than an `ArrayList` because this is the whole of the marking walk's
+     * bookkeeping and the list's bounds checks and `removeAt` shuffle were showing up next to the
+     * two pointer loads that are the actual work.
      *
      * Safe to share because marking runs to completion without calling anything that could mark
      * again: [mark] touches only flags and link lists, never a compute body. Nested recomputes do
-     * not overlap here either — an inner recompute commits, drains this list and returns before
+     * not overlap here either — an inner recompute commits, drains this stack and returns before
      * the outer one commits.
      */
-    private val markStack = ArrayList<Node>()
+    private var markStack = arrayOfNulls<Node>(64)
+    private var markTop = 0
+
+    private fun pushMark(n: Node) {
+        if (markTop == markStack.size) markStack = markStack.copyOf(markTop * 2)
+        markStack[markTop++] = n
+    }
 
     /**
      * Raise a node's colour and propagate `CHECK` downstream.
@@ -673,19 +704,38 @@ class Graph {
      * downgrade DIRTY to CHECK" rule, which is why [Flags.CHECK] must be 1 and
      * [Flags.DIRTY] must be 2.
      *
-     * Iterative rather than recursive, and for the same reason [Graph.maxChainDepth] exists:
+     * **Iterative** rather than recursive, and for the same reason [Graph.maxChainDepth] exists:
      * marking descends the subscriber graph, so its depth is also the longest chain, and a write
      * at the head of a long list would blow the stack in the *write* rather than in the read. That
      * one is worth removing outright instead of budgeting, because unlike pull evaluation nothing
      * here needs the call stack — the walk carries no state between levels beyond "raise CHECK",
      * so a worklist is a straight substitution rather than a rewrite of the algorithm.
+     *
+     * **Colours are raised when a node is pushed, not when it is popped**, which is what keeps the
+     * stack proportional to the nodes marked rather than to the edges traversed. A layout graph is
+     * full of small diamonds — `width` reads `left` and `right`, both of which read the parent — so
+     * a node is typically reachable by two to four paths and would otherwise be pushed once per
+     * path and discarded on all but the first. The set of nodes raised is identical either way, and
+     * so is `stats.marked`; what changes is how much of the walk is wasted motion.
      */
     private fun mark(start: Node, newState: Int) {
         if (!raise(start, newState)) return
+
+        // Tried and rejected here: returning early when `start` was *already* coloured, on the
+        // argument that a `CHECK`-to-`DIRTY` raise tells subscribers nothing the walk that
+        // coloured it has not already said. The argument holds — it rests on "coloured implies
+        // every transitive subscriber is coloured", which survives because a node only loses its
+        // colour by settling, and settling settles its dependencies first — and it should have
+        // paid, since a 40k resize raises `CHECK` to `DIRTY` tens of thousands of times through
+        // `notifySubs`. It measured as **no change at all**, because raise-at-push has already made
+        // the redundant walk nearly free: every subscriber it reaches is rejected by one flags test
+        // against a `Node` that resolution has just pulled into cache. So the shortcut bought
+        // nothing and cost a non-local invariant, which is a bad trade at any price.
         pushSubscribers(start)
-        while (markStack.isNotEmpty()) {
-            val n = markStack.removeAt(markStack.size - 1)
-            if (raise(n, Flags.CHECK)) pushSubscribers(n)
+        while (markTop > 0) {
+            val n = markStack[--markTop]!!
+            markStack[markTop] = null   // so a long-dead node is not held live by the scratch stack
+            pushSubscribers(n)
         }
     }
 
@@ -701,7 +751,8 @@ class Graph {
     private fun pushSubscribers(n: Node) {
         var l = n.subs
         while (l != null) {
-            markStack.add(l.sub)
+            val s = l.sub
+            if (raise(s, Flags.CHECK)) pushMark(s)
             l = l.nextSub
         }
 
@@ -713,7 +764,8 @@ class Graph {
         while (c != null) {
             var cl = c.subs
             while (cl != null) {
-                markStack.add(cl.sub)
+                val s = cl.sub
+                if (raise(s, Flags.CHECK)) pushMark(s)
                 cl = cl.nextSub
             }
             c = c.nextChild
@@ -830,11 +882,13 @@ class Graph {
      * answer is worse as a default.
      */
     private fun reportCycle(owner: Node) {
-        val start = evalStack.indexOfFirst { it === owner }
+        var start = -1
+        for (i in 0 until evalTop) if (evalStack[i] === owner) { start = i; break }
         if (start >= 0) {
-            val members = ArrayList<CycleMember>(evalStack.size - start)
-            for (i in start until evalStack.size) {
-                members += CycleMember(evalStack[i].slot, evalStack[i].name)
+            val members = ArrayList<CycleMember>(evalTop - start)
+            for (i in start until evalTop) {
+                val e = evalStack[i]!!
+                members += CycleMember(e.slot, e.name)
             }
             diagnostics.cycle(members)
         }
