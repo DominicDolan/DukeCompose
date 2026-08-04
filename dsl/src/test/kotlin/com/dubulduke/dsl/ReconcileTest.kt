@@ -1,5 +1,7 @@
 package com.dubulduke.dsl
 
+import com.dubulduke.utils.*
+
 import com.dubulduke.layout.ElementTree
 import com.dubulduke.layout.HeadlessTextMetrics
 import com.dubulduke.layout.SimpleFont

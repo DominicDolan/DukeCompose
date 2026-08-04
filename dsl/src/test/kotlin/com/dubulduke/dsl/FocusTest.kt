@@ -1,5 +1,7 @@
 package com.dubulduke.dsl
 
+import com.dubulduke.utils.*
+
 import com.dubulduke.layout.FocusCommand
 import com.dubulduke.layout.FocusDirection
 import com.dubulduke.layout.HeadlessTextMetrics

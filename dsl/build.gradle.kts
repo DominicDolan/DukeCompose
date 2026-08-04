@@ -15,6 +15,11 @@ dependencies {
     api(project(":layout"))
 
     testImplementation(kotlin("test"))
+    // The utilities are *downstream* of this module — `:utils` is where `fill()` and `below()` live
+    // now — and the tests here use them for the geometry boilerplate every scene needs. Gradle
+    // resolves dsl:test → utils → dsl:main without a cycle, since nothing in `:utils` is on the
+    // main compile classpath. Production code in this module must not reach for them.
+    testImplementation(project(":utils"))
 }
 
 kotlin {

@@ -1,5 +1,7 @@
 package com.dubulduke.dsl
 
+import com.dubulduke.utils.*
+
 import com.dubulduke.layout.ClipRect
 import com.dubulduke.layout.HeadlessTextMetrics
 import com.dubulduke.layout.NodeView

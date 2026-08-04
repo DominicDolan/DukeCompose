@@ -61,7 +61,14 @@ fun interface StyleFactory<S : Any> {
  */
 @DukeDsl
 class ElementScope<S : Any> internal constructor(
-    @JvmField internal val builder: ElementBuilder,
+    /**
+     * The `:layout` element under construction.
+     *
+     * Public for the same reason [childDefaults] is: a container mechanism built on `:layout`'s
+     * primitives — `flexRow` is the shipped example, and it lives in `:utils` rather than here —
+     * has to reach the builder to install one. See [buildChild] for the other half.
+     */
+    @JvmField val builder: ElementBuilder,
     @JvmField internal val styles: StyleFactory<S>,
     /**
      * What this element's *container* wants for it. Applied before the element's own `layout { }`,
@@ -94,8 +101,19 @@ class ElementScope<S : Any> internal constructor(
 
     internal var layoutScope: LayoutScope? = null
 
-    /** Defaults this scope stamps on *its* children. Null unless a container scope sets one. */
-    internal var childDefaults: (LayoutScope.() -> Unit)? = null
+    /**
+     * Defaults this scope stamps on *its* children. Null unless a container scope sets one.
+     *
+     * Public because a container is nothing more than this being set — [stackDown] and
+     * [stackAcross] are two lines each — and an application that wants a container the DSL does not
+     * ship (V-Tess stacks its menus down a *slanted* edge) has no other way to write one. Keeping
+     * it internal would have made the two shipped containers privileged, which §3.3's whole point
+     * is that they are not.
+     *
+     * Set it *before* adding children: defaults are read when a child is created, so a child added
+     * first does not get them.
+     */
+    var childDefaults: (LayoutScope.() -> Unit)? = null
 
     private fun scope(): LayoutScope =
         layoutScope ?: LayoutScope(graph, tree, element).also {
@@ -104,8 +122,15 @@ class ElementScope<S : Any> internal constructor(
             inherited?.let { d -> it.applyDefaults(d) }
         }
 
-    /** The scope, forced into existence. For a flex item, whose size expression needs it. */
-    internal fun layoutScope(): LayoutScope = scope()
+    /**
+     * The scope, forced into existence. For a flex item, whose size expression needs it.
+     *
+     * Public because a container mechanism outside this module needs it for two things: to hold an
+     * item's scope while the item is still being built, so a size expression evaluated later has
+     * somewhere to resolve against, and to make a reservation ([LayoutScope.reserveSize]) before
+     * the element's own block runs.
+     */
+    fun layoutScope(): LayoutScope = scope()
 
     /**
      * Position and size this element.

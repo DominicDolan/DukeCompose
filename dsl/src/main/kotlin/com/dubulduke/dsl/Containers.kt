@@ -128,74 +128,9 @@ fun <S : Any> ElementScope<S>.spacer(size: Double, id: String? = null): Element 
 }
 
 // -------------------------------------------------------------------------------------
-// Utilities — §2.3
-//
-// These are the payoff of slot-level assignment. Under iteration C's builder chain
-// (`.alignTop(1.0).width(5.0)`) none of this could be factored into a reusable helper at all,
-// because the chain's `edit { p, s -> }` was atomic. Two utilities conflict only if they assign
-// the same slot, which is mechanically detectable rather than a matter of ordering luck.
+// The layout utilities that used to sit here — `fillWidth`, `below`, `centreIn` and the rest of
+// §2.3 — are in `:utils` now, along with the flex authoring surface. Nothing about them needed
+// to be here: every one is an extension on [LayoutScope] writing public slots, which is exactly
+// §2.3's claim about them, and keeping them downstream makes that claim checkable rather than
+// merely stated. `:dsl` is the mechanism; `:utils` is the vocabulary.
 // -------------------------------------------------------------------------------------
-
-/** Span the parent's width, inset by [inset] on each side. */
-fun LayoutScope.fillWidth(inset: Double = 0.0) {
-    left { parent.left + inset }
-    right { parent.right - inset }
-}
-
-/** Span the parent's height, inset by [inset] top and bottom. */
-fun LayoutScope.fillHeight(inset: Double = 0.0) {
-    top { parent.top + inset }
-    bottom { parent.bottom - inset }
-}
-
-/** Fill the parent entirely, inset on all four sides. */
-fun LayoutScope.fill(inset: Double = 0.0) {
-    fillWidth(inset)
-    fillHeight(inset)
-}
-
-/** Sit below the previous sibling, or at the top of the parent for the first. */
-fun LayoutScope.below(gap: Double = 0.0) {
-    top { prev?.let { it.bottom + gap } ?: parent.top }
-}
-
-/** Sit after the previous sibling, or at the parent's left edge for the first. */
-fun LayoutScope.after(gap: Double = 0.0) {
-    left { prev?.let { it.right + gap } ?: parent.left }
-}
-
-fun LayoutScope.size(w: Double, h: Double) {
-    width { w }
-    height { h }
-}
-
-/** As tall as it is wide. The clearest case for slot-level expressions: one axis reads the other. */
-fun LayoutScope.square() {
-    height { width }
-}
-
-fun LayoutScope.centreIn(other: Layout) {
-    centerX { other.centerX }
-    centerY { other.centerY }
-}
-
-fun LayoutScope.centreInParent() {
-    centerX { parent.centerX }
-    centerY { parent.centerY }
-}
-
-/**
- * Shrink-wrap this element around its children: the box that contains all of them, plus [pad].
- *
- * Reads the child *list*, not merely the children's geometry, so adding one invalidates this
- * correctly — the whole point of `layout-design.md` §8.7.
- */
-fun LayoutScope.wrapChildren(pad: Double = 0.0) {
-    width { if (children.isEmpty) 0.0 else children.maxOf { it.right } - left + pad }
-    height { if (children.isEmpty) 0.0 else children.maxOf { it.bottom } - top + pad }
-}
-
-/** Height from this element's own wrapped text, at whatever width it ends up with. */
-fun LayoutScope.heightFromText() {
-    height { self.contentHeight }
-}

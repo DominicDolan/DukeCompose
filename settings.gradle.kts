@@ -6,3 +6,4 @@ rootProject.name = "DukeCompose"
 include("reactivity")
 include("layout")
 include("dsl")
+include("utils")

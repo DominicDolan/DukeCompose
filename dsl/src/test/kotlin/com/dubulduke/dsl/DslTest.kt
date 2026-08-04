@@ -1,5 +1,7 @@
 package com.dubulduke.dsl
 
+import com.dubulduke.utils.*
+
 import com.dubulduke.layout.ElementTree
 import com.dubulduke.layout.HeadlessTextMetrics
 import com.dubulduke.layout.SimpleFont
@@ -241,8 +243,12 @@ class DslTest {
         screen {
             box("a") {
                 layout {
+                    // `block` rather than `below`: `below` is block-plus-alignLeft, so it would
+                    // write `left` too and — last write wins — undo the 8.0 inset. Utilities
+                    // compose when they write different slots, which is the claim under test;
+                    // when two of them write the same slot the later one simply wins, visibly.
                     fillWidth(8.0)
-                    below(4.0)
+                    block(4.0)
                     height { 40.0 }
                 }
             }

@@ -1,4 +1,6 @@
-package com.dubulduke.dsl
+package com.dubulduke.utils
+
+import com.dubulduke.dsl.*
 
 import com.dubulduke.layout.ElementTree
 import com.dubulduke.layout.HeadlessTextMetrics

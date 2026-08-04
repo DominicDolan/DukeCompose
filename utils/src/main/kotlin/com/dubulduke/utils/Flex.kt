@@ -1,8 +1,16 @@
-package com.dubulduke.dsl
+package com.dubulduke.utils
 
+import com.dubulduke.dsl.Ambient
+import com.dubulduke.dsl.DukeDsl
+import com.dubulduke.dsl.ElementScope
+import com.dubulduke.dsl.Layout
+import com.dubulduke.dsl.LayoutExpression
+import com.dubulduke.dsl.LayoutScope
+import com.dubulduke.dsl.buildChild
 import com.dubulduke.layout.Direction
-import com.dubulduke.layout.Marker
 import com.dubulduke.layout.Element
+import com.dubulduke.layout.ElementBuilder
+import com.dubulduke.layout.Marker
 import com.dubulduke.reactivity.Computation
 import com.dubulduke.layout.FlexScope as LayoutFlexScope
 import com.dubulduke.layout.flexRow as layoutFlexRow
@@ -25,6 +33,11 @@ import com.dubulduke.layout.flexRow as layoutFlexRow
  * node the *container* owns, so growing children read the pool rather than each other, and what
  * looks like a strongly connected component collapses into a plain DAG. This is only the authoring
  * surface over it.
+ *
+ * It lives in `:utils` rather than `:dsl` for the reason §3.3 gives for containers generally: it is
+ * not privileged. Everything it needs from `:dsl` — [buildChild], [LayoutScope.reserveSize] — is
+ * public, so an application's own container mechanism is written exactly the same way, against the
+ * same seam, with no access this one has and it does not.
  *
  * ### An item's main axis is not writable
  *
@@ -129,8 +142,6 @@ class FlexRowScope<S : Any> internal constructor(
     private val direction: Direction,
     private val gap: Double,
 ) {
-    private val styles: StyleFactory<S> get() = container.styles
-
     /** The row itself, for reading its geometry. */
     val self: Layout get() = container.self
 
@@ -264,11 +275,8 @@ class FlexRowScope<S : Any> internal constructor(
             with(e) { s.evaluate() }
         }
 
-        fun build(body: ElementScope<S>.() -> Unit): com.dubulduke.layout.ElementBuilder.() -> Unit = {
-            val es = ElementScope(this, styles, crossDefaults, direction)
-            scope = es.layoutScope()
-            es.body()
-            es.finish()
+        fun build(body: ElementScope<S>.() -> Unit): ElementBuilder.() -> Unit = {
+            scope = container.buildChild(this, crossDefaults, direction) { body() }
         }
     }
 }

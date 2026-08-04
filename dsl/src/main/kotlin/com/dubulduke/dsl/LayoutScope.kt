@@ -182,14 +182,26 @@ class LayoutScope internal constructor(
         if (horizontal) reservedHorizontal = true else reservedVertical = true
     }
 
-    /** Write a size the author is forbidden to write — for whatever made the reservation. */
-    internal fun setReservedSize(horizontal: Boolean, e: LayoutExpression) {
+    /**
+     * Write a size the author is forbidden to write — for whatever made the reservation.
+     *
+     * Public alongside [reserveSize] because the mechanism that makes a reservation is not
+     * necessarily in this module: `:utils`'s shrink-to-fit flex row reserves its own main-axis
+     * size, then writes it from the solve's output. Saying `setReserved` at the call site is the
+     * point — it marks the one assignment the reservation is *not* guarding against.
+     */
+    fun setReservedSize(horizontal: Boolean, e: LayoutExpression) {
         if (horizontal) sizeReservedHorizontal = false else sizeReservedVertical = false
         set(if (horizontal) Edge.WIDTH else Edge.HEIGHT, e)
         if (horizontal) sizeReservedHorizontal = true else sizeReservedVertical = true
     }
 
-    internal fun reserveSize(horizontal: Boolean) {
+    /**
+     * Claim this element's size along one axis for a container mechanism, leaving its position to
+     * the author. Writing that size afterwards is an error naming the mechanism rather than
+     * `:layout`'s lower-level complaint about an axis that already has one.
+     */
+    fun reserveSize(horizontal: Boolean) {
         if (horizontal) sizeReservedHorizontal = true else sizeReservedVertical = true
     }
 
