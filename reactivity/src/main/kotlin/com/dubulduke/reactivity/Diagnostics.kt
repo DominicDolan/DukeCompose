@@ -23,7 +23,7 @@ fun interface DiagnosticSink {
         val Ignore: DiagnosticSink = DiagnosticSink { }
 
         val Stderr: DiagnosticSink = DiagnosticSink { members ->
-            System.err.println(formatCycle(members))
+            writeDiagnostic(formatCycle(members))
         }
 
         /** Useful in tests and in any build that should treat a cycle as a bug. */

@@ -86,7 +86,7 @@ class Graph {
     private var evalStack = arrayOfNulls<Node>(64)
     private var evalTop = 0
 
-    private val owningThread: Thread = Thread.currentThread()
+    private val owningThread: Any = PlatformSupport.currentThread()
 
     var diagnostics: DiagnosticSink = DiagnosticSink.Stderr
 
@@ -105,7 +105,7 @@ class Graph {
      * Set it to [Int.MAX_VALUE] to opt out entirely and take the `StackOverflowError`, which is
      * what a benchmark measuring the real ceiling wants and nothing else does.
      */
-    var maxChainDepth: Int = ChainDepth.budget.get()
+    var maxChainDepth: Int = ChainDepth.budget
         set(value) {
             require(value > 0) { "maxChainDepth must be positive, was $value" }
             field = value
@@ -784,7 +784,7 @@ class Graph {
      */
     private fun valueEquals(n: Node, a: Double, b: Double): Boolean =
         if (n.epsilon == 0.0) a.toRawBits() == b.toRawBits()
-        else Math.abs(a - b) <= n.epsilon
+        else kotlin.math.abs(a - b) <= n.epsilon
 
     private fun refEquals(n: Node, a: Any?, b: Any?): Boolean = when (n.refEquality) {
         RefEquality.IDENTITY -> a === b
@@ -970,8 +970,8 @@ class Graph {
     val nodeCapacity: Int get() = nodes.size
 
     private fun checkThread() {
-        check(Thread.currentThread() === owningThread) {
-            "Graph is single-threaded; created on $owningThread, used from ${Thread.currentThread()}"
+        check(PlatformSupport.isCurrentThread(owningThread)) {
+            "Graph is single-threaded; created on $owningThread, used from ${PlatformSupport.currentThread()}"
         }
     }
 }

@@ -143,7 +143,7 @@ private fun quote(s: String): String {
             '\t' -> sb.append("\\t")
             '\b' -> sb.append("\\b")
             '' -> sb.append("\\f")
-            else -> if (c < ' ') sb.append("\\u%04x".format(c.code)) else sb.append(c)
+            else -> if (c < ' ') sb.append("\\u").append(c.code.toString(16).padStart(4, '0')) else sb.append(c)
         }
     }
     sb.append('"')

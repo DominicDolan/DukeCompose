@@ -5,6 +5,7 @@
 // compiler reading it. Raise these together with Mechanica's, not on their own.
 plugins {
     kotlin("jvm") version "2.2.0"
+    kotlin("multiplatform") version "2.2.0" apply false
 }
 
 group = "org.example"

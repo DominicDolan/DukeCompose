@@ -1,5 +1,8 @@
 package com.dubulduke.dsl
 
+import kotlin.jvm.JvmField
+import kotlin.jvm.JvmInline
+
 import com.dubulduke.layout.Axis
 import com.dubulduke.layout.AxisBuilder
 import com.dubulduke.layout.Content

@@ -1,5 +1,7 @@
 package com.dubulduke.layout
 
+import kotlin.jvm.JvmField
+
 import com.dubulduke.reactivity.Graph
 import com.dubulduke.reactivity.Slot
 import com.dubulduke.reactivity.nodeName
@@ -253,7 +255,7 @@ class Pointer(private val tree: ElementTree) {
      * frames that is unstable. Widening the reactivity sink for a layout-level concern would put
      * `:layout` vocabulary in a module that does not know what an element is.
      */
-    var onOscillation: (String) -> Unit = { System.err.println(it) }
+    var onOscillation: (String) -> Unit = { com.dubulduke.reactivity.writeDiagnostic(it) }
 
     /**
      * Hit-test in **window** coordinates, update the graph, and dispatch.

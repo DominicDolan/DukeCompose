@@ -1,5 +1,7 @@
 package com.dubulduke.layout
 
+import kotlin.jvm.JvmField
+
 import com.dubulduke.reactivity.Graph
 import com.dubulduke.reactivity.RefComputation
 import com.dubulduke.reactivity.RefEquality

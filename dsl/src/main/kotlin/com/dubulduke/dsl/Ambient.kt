@@ -1,5 +1,7 @@
 package com.dubulduke.dsl
 
+import kotlin.jvm.JvmField
+
 /**
  * A value supplied by an ancestor and read by a descendant. `dsl-and-engine.md` §4.2.
  *

@@ -1,5 +1,7 @@
 package com.dubulduke.reactivity
 
+import kotlin.jvm.JvmField
+
 /**
  * Whether graph nodes carry the human-readable names their diagnostics are written in.
  *
@@ -46,7 +48,7 @@ object NodeNames {
      * legal but pointless: nodes already built keep whatever they were given.
      */
     @JvmField
-    var enabled: Boolean = System.getProperty(PROPERTY)?.lowercase() != "false"
+    var enabled: Boolean = PlatformSupport.nodeNamesEnabled()
 }
 
 /**

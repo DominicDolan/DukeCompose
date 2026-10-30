@@ -1,5 +1,7 @@
 package com.dubulduke.utils
 
+import kotlin.jvm.JvmField
+
 import com.dubulduke.dsl.Ambient
 import com.dubulduke.dsl.DukeDsl
 import com.dubulduke.dsl.ElementScope

@@ -1,5 +1,8 @@
 package com.dubulduke.reactivity
 
+import kotlin.jvm.JvmField
+import kotlin.jvm.JvmInline
+
 /**
  * Handle to a node in a [Graph]. A value class over an `Int`, so the public API stays
  * handle-based and a later struct-of-arrays rewrite of the internals changes nothing here.

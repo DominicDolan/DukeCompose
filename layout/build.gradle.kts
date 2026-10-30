@@ -1,33 +1,34 @@
 plugins {
-    kotlin("jvm")
+    kotlin("multiplatform")
 }
 
 group = "com.dubulduke"
 version = "1.0-SNAPSHOT"
-
-repositories {
-    mavenCentral()
-}
-
-dependencies {
-    // `api`, not `implementation`: Slot, Graph and Computation appear in this module's own
-    // public signatures, so anything depending on :layout needs them on its compile classpath.
-    api(project(":reactivity"))
-
-    testImplementation(kotlin("test"))
-}
+repositories { mavenCentral() }
 
 kotlin {
     jvmToolchain(22)
+    jvm()
+    linuxX64()
+    sourceSets {
+        commonMain {
+            kotlin.srcDir("src/main/kotlin")
+            dependencies { api(project(":reactivity")) }
+        }
+        jvmTest {
+            kotlin.srcDir("src/test/kotlin")
+            dependencies {
+                implementation(kotlin("test"))
+
+            }
+        }
+    }
 }
 
-tasks.test {
+tasks.named<Test>("jvmTest") {
     useJUnitPlatform()
-    // ScaleTest holds two 40k-element scenes at once (~270k graph nodes each) so that a full
-    // re-layout can be timed on a fresh graph more than once and the best run taken.
     maxHeapSize = "2g"
-    // Forwarded so `./gradlew test -Dduke.nodeNames=false` exercises a release-shaped build. The
-    // suite must pass either way: node names are diagnostics, and a test that needs one to hold is
-    // asserting on a message rather than on behaviour.
     System.getProperty("duke.nodeNames")?.let { systemProperty("duke.nodeNames", it) }
 }
+
+tasks.register("test") { dependsOn("jvmTest") }

@@ -1,5 +1,7 @@
 package com.dubulduke.dsl
 
+import kotlin.jvm.JvmField
+
 import com.dubulduke.layout.Direction
 import com.dubulduke.layout.Element
 import com.dubulduke.layout.ElementBuilder

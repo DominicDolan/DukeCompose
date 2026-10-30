@@ -1,5 +1,7 @@
 package com.dubulduke.dsl
 
+import kotlin.jvm.JvmField
+
 import com.dubulduke.reactivity.Graph
 import com.dubulduke.reactivity.RefEquality
 import com.dubulduke.reactivity.Slot

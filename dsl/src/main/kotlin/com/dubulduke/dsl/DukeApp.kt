@@ -1,5 +1,7 @@
 package com.dubulduke.dsl
 
+import kotlin.jvm.JvmField
+
 import com.dubulduke.layout.DukeBackend
 import com.dubulduke.layout.DukeHost
 import com.dubulduke.layout.Element

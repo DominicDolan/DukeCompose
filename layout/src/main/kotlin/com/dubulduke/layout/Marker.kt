@@ -1,5 +1,7 @@
 package com.dubulduke.layout
 
+import kotlin.jvm.JvmField
+
 /**
  * A typed tag on an element, for the ancestor queries of `dsl-and-engine.md` §4.2.
  *

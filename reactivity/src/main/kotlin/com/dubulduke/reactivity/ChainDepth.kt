@@ -106,7 +106,7 @@ object ChainDepth {
      * initialiser, long before any host has an opinion. Whoever *did* size the stack is the only
      * party that knows the answer, so the answer travels with the thread.
      */
-    internal val budget = ThreadLocal.withInitial { DEFAULT_MAX_CHAIN_DEPTH }
+    internal val budget: Int get() = PlatformSupport.chainDepthBudget()
 
     /**
      * Declare that the current thread's stack can carry chains [depth] links long.
@@ -117,39 +117,8 @@ object ChainDepth {
      */
     fun declareBudget(depth: Int) {
         require(depth > 0) { "depth must be positive, was $depth" }
-        budget.set(depth)
+        PlatformSupport.setChainDepthBudget(depth)
     }
-}
-
-/**
- * Start a thread sized for a known worst-case chain depth, on which graphs get the matching budget.
- *
- * ```kotlin
- * layoutThread(maxChainDepth = 64_000) {
- *     val app = MyUI()          // its Graph adopts the 64 000 budget
- *     app.compose { … }
- *     while (running) { app.update(dt); app.draw(renderer) }
- * }.join()
- * ```
- *
- * This is the fix `layout-design.md` §11.2 called legitimate rather than a workaround, and the
- * reason it is legitimate is [ChainDepth.depthForStack] being linear: the stack is *computed* from
- * a requirement, not tuned until the crashes stop. The default 64 000 links is about 32 000 chained
- * rows and reserves 37 MB of address space, which a thread that exists once per process does not
- * need to justify.
- */
-fun layoutThread(
-    name: String = "duke-layout",
-    maxChainDepth: Int = 64_000,
-    body: () -> Unit,
-): Thread {
-    val stack = ChainDepth.stackForDepth(maxChainDepth)
-    val t = Thread(null, {
-        ChainDepth.declareBudget(maxChainDepth)
-        body()
-    }, name, stack)
-    t.start()
-    return t
 }
 
 /**
