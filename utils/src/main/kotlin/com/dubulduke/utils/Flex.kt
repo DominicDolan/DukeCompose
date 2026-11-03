@@ -92,7 +92,7 @@ fun <S : Any> ElementScope<S>.flexRow(
     // silent override — the size belongs to the solve from here on.
     if (bound != null) scope.reserveSize(direction == Direction.HORIZONTAL)
 
-    val row = builder.layoutFlexRow(direction, clamped, bound) {
+    val row = builder.layoutFlexRow(direction, verticalStartIsLow = false, clamped = clamped, shrinkToFit = bound) {
         FlexRowScope(container, this, direction, gap).body()
     }
 

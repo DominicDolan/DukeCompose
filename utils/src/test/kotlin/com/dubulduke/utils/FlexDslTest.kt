@@ -144,6 +144,28 @@ class FlexDslTest {
     }
 
     @Test
+    fun `vertical flex items preserve top down coordinates for descendants`() {
+        compose {
+            flexColumn(id = "col") {
+                fill()
+                fixed({ 10.0 }, id = "first")
+                grow(1.0, id = "panel") {
+                    box("heading") {
+                        layout { fillWidth(); top { parent.top }; height { 1.0 } }
+                    }
+                    box("after") {
+                        layout { fillWidth(); top { parent.bottom }; height { 1.0 } }
+                    }
+                }
+            }
+        }
+        assertEquals(0.0, g.topOf(tree.query("first")))
+        assertEquals(10.0, g.topOf(tree.query("panel")))
+        assertEquals(10.0, g.topOf(tree.query("heading")))
+        assertEquals(40.0, g.topOf(tree.query("after")))
+    }
+
+    @Test
     fun `a clamped row respects a max`() {
         compose {
             flexRow(clamped = true, id = "row") {

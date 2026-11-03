@@ -48,6 +48,7 @@ fun Graph.flexOf(e: Element): Double {
 class FlexRow internal constructor(
     @JvmField val container: Element,
     @JvmField val direction: Direction,
+    @JvmField val verticalStartIsLow: Boolean,
     /** Which mechanism resolves this row. Fixed at composition time. */
     @JvmField val mode: FlexMode,
     private val freeSpaceOrNull: Slot?,
@@ -167,6 +168,8 @@ fun ElementBuilder.flexRow(
      * the container's own size, because computing that size is the point.
      */
     shrinkToFit: Computation? = null,
+    /** Match the vertical coordinate direction used by the authoring surface. */
+    verticalStartIsLow: Boolean = true,
     build: FlexScope.() -> Unit,
 ): FlexRow {
     val g = tree.graph
@@ -178,10 +181,10 @@ fun ElementBuilder.flexRow(
                 "to divide a pool, the other computes that size, so together they are the cycle " +
                 "shrink-to-fit exists to avoid"
         }
-        return shrinkRow(g, container, direction, shrinkToFit, build)
+        return shrinkRow(g, container, direction, verticalStartIsLow, shrinkToFit, build)
     }
 
-    if (clamped) return governedRow(g, container, direction, build)
+    if (clamped) return governedRow(g, container, direction, verticalStartIsLow, build)
 
     // Hoisted before the children are built, so their expressions can capture the handles.
     // Both read the *published child list*, so adding or removing an item invalidates them
@@ -209,7 +212,7 @@ fun ElementBuilder.flexRow(
         sum
     }
 
-    val row = FlexRow(container, direction, FlexMode.HOIST, freeSpace, totalFlex, null)
+    val row = FlexRow(container, direction, verticalStartIsLow, FlexMode.HOIST, freeSpace, totalFlex, null)
     FlexScope(this, row).apply(build)
     return row
 }
@@ -231,9 +234,10 @@ private fun ElementBuilder.governedRow(
     g: Graph,
     container: Element,
     direction: Direction,
+    verticalStartIsLow: Boolean,
     build: FlexScope.() -> Unit,
 ): FlexRow {
-    val row = FlexRow(container, direction, FlexMode.GOVERN, null, null, null)
+    val row = FlexRow(container, direction, verticalStartIsLow, FlexMode.GOVERN, null, null, null)
     val scope = FlexScope(this, row).apply(build)
     val items = scope.governed
 
@@ -305,7 +309,7 @@ private fun ElementBuilder.governedRow(
     // Held on the element so subtree disposal can release the claims before it frees the
     // children whose size slots they are.
     container.governor = gov
-    return FlexRow(container, direction, FlexMode.GOVERN, null, null, gov)
+    return FlexRow(container, direction, verticalStartIsLow, FlexMode.GOVERN, null, null, gov)
 }
 
 /**
@@ -320,11 +324,12 @@ private fun ElementBuilder.shrinkRow(
     g: Graph,
     container: Element,
     direction: Direction,
+    verticalStartIsLow: Boolean,
     available: Computation,
     build: FlexScope.() -> Unit,
 ): FlexRow {
     val contentSlot = g.input(0.0, nodeName { "${container.path}.content" })
-    val row = FlexRow(container, direction, FlexMode.SHRINK, null, null, null, contentSlot)
+    val row = FlexRow(container, direction, verticalStartIsLow, FlexMode.SHRINK, null, null, null, contentSlot)
     val scope = FlexScope(this, row).apply(build)
     val items = scope.shrinking
 
@@ -422,7 +427,7 @@ private fun ElementBuilder.shrinkRow(
     }
 
     container.governor = gov
-    return FlexRow(container, direction, FlexMode.SHRINK, null, null, gov, contentSlot)
+    return FlexRow(container, direction, verticalStartIsLow, FlexMode.SHRINK, null, null, gov, contentSlot)
 }
 
 /** One growing item of a governed row: what its solve needs, captured at composition. */
@@ -525,6 +530,7 @@ class FlexScope internal constructor(
 
         val direction = row.direction
         val container = row.container
+        val verticalStartIsLow = row.verticalStartIsLow
         val shrinking = this.shrinking
 
         return owner.child(id) {
@@ -550,7 +556,7 @@ class FlexScope internal constructor(
 
             when (direction) {
                 Direction.HORIZONTAL -> h(build = main)
-                Direction.VERTICAL -> v(build = main)
+                Direction.VERTICAL -> v(startIsLow = verticalStartIsLow, build = main)
             }
             build()
         }
@@ -632,7 +638,7 @@ class FlexScope internal constructor(
             // gets a clear "already has an axis" error rather than a silent override otherwise.
             when (direction) {
                 Direction.HORIZONTAL -> h(build = main)
-                Direction.VERTICAL -> v(build = main)
+                Direction.VERTICAL -> v(startIsLow = row.verticalStartIsLow, build = main)
             }
             build()
         }
