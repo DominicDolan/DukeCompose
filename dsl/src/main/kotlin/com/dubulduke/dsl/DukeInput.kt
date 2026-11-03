@@ -34,4 +34,7 @@ interface DukeInput {
      * Defaulted, so a platform with no keyboard — and every existing test double — needs no change.
      */
     val navigation: FocusCommand? get() = null
+
+    /** Editing events for this frame, ordered as received. Empty when there are none. */
+    val textEdits: List<TextEdit> get() = emptyList()
 }

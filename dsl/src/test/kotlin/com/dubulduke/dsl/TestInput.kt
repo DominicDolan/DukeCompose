@@ -33,6 +33,8 @@ class TestInput : DukeInput {
     override val scrollDistance: Double
         get() = wheel.also { wheel = 0.0 }
 
+    override var textEdits: List<TextEdit> = emptyList()
+
     /** A navigation command for the next frame. Tests set it, press, and clear it. */
     override var navigation: com.dubulduke.layout.FocusCommand? = null
 }

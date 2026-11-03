@@ -187,6 +187,13 @@ class Focuser(private val tree: ElementTree) {
     /** Called after focus moves, with the newly focused element. For a caret, a sound, a log. */
     var onFocusChanged: (Element?) -> Unit = {}
 
+    private val focusListeners = mutableListOf<(Element?, Element?) -> Unit>()
+
+    /** Observe focus transitions without replacing [onFocusChanged]. */
+    fun addFocusListener(listener: (previous: Element?, current: Element?) -> Unit) {
+        focusListeners.add(listener)
+    }
+
     /**
      * Give focus to [e], or clear it with `null`.
      *
@@ -196,6 +203,7 @@ class Focuser(private val tree: ElementTree) {
         require(e == null || e.focus != null) { "$e is not focusable; call focusable() on it" }
         if (e === focused) return
 
+        val previous = focused
         val g = tree.graph
         focused?.focus?.let { g.setInput(it.focusedSlot, 0.0) }
         e?.focus?.let { g.setInput(it.focusedSlot, 1.0) }
@@ -203,6 +211,7 @@ class Focuser(private val tree: ElementTree) {
 
         if (e != null) reveal(e)
         onFocusChanged(e)
+        focusListeners.toList().forEach { it(previous, e) }
     }
 
     /** Drop focus without moving it. */

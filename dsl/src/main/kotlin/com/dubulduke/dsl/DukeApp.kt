@@ -93,6 +93,41 @@ abstract class DukeApp<S : Any, R>(
 
     abstract val input: DukeInput
 
+    /** A field's state and font, exposed for platform renderers. */
+    class TextFieldView internal constructor(
+        val state: TextFieldState, val font: com.dubulduke.layout.FontRef,
+        internal val onSubmit: () -> Unit, internal val onCancel: () -> Unit,
+        internal val onFocusChanged: (Boolean) -> Unit,
+    )
+    private val textFields = mutableMapOf<Element, TextFieldView>()
+    fun textFieldOf(element: Element): TextFieldView? = textFields[element]
+    val isEditingText: Boolean get() = focus.focused?.let { textFields.containsKey(it) } == true
+    private val textFieldReleases = mutableMapOf<Element, () -> Unit>()
+
+    init {
+        focus.addFocusListener { previous, current ->
+            previous?.let { textFields[it]?.onFocusChanged?.invoke(false) }
+            current?.let { textFields[it]?.onFocusChanged?.invoke(true) }
+        }
+        tree.onDispose { element ->
+            textFields.remove(element)
+            textFieldReleases.remove(element)
+        }
+    }
+
+    internal fun registerTextField(element: Element, state: TextFieldState, font: com.dubulduke.layout.FontRef,
+        onSubmit: () -> Unit, onCancel: () -> Unit, onFocusChanged: (Boolean) -> Unit) {
+        textFields[element] = TextFieldView(state, font, onSubmit, onCancel, onFocusChanged)
+    }
+
+    internal fun registerTextFieldRelease(element: Element, release: () -> Unit) {
+        textFieldReleases[element] = release
+    }
+
+    /** Whether the last update delivered text editing events to a focused field. */
+    var textEditsConsumed: Boolean = false
+        private set
+
     /**
      * The size of the layout coordinate space, as graph inputs.
      *
@@ -183,6 +218,7 @@ abstract class DukeApp<S : Any, R>(
      * than the notch. [delta] is seconds since the last frame.
      */
     fun update(delta: Double) {
+        textEditsConsumed = false
         if (isComposed) {
             pendingScroll += input.scrollDistance
 
@@ -201,7 +237,21 @@ abstract class DukeApp<S : Any, R>(
                 pendingScroll = 0.0
             }
 
-            pointer.update(this, input.pointerX, input.pointerY, input.isClickDown(), step)
+            val down = input.isClickDown()
+            pointer.update(this, input.pointerX, input.pointerY, down, step)
+            if (!down) textFieldReleases.values.forEach { it() }
+
+            val edits = input.textEdits
+            val field = focus.focused?.let { textFields[it] }
+            textEditsConsumed = field != null && edits.isNotEmpty()
+            if (field != null) for (edit in edits) {
+                if (focus.focused?.let { textFields[it] } !== field) break
+                when (edit) {
+                    TextEdit.Submit -> field.onSubmit()
+                    TextEdit.Cancel -> field.onCancel()
+                    else -> field.state.edit(edit)
+                }
+            }
 
             // Focus navigation *after* the pointer and *before* reconcile, for the same reason the
             // pointer runs where it does: activating a focused button may change the list, and that

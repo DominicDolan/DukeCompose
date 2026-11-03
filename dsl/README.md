@@ -417,6 +417,32 @@ That is `startIsLow = false` on the vertical axis underneath. `:layout` supports
 and stays neutral; an authoring surface where `top` sometimes means the bottom would not be
 defensible, so this layer picks one and says so.
 
+## Editable text
+
+A single-line field uses application-owned state and the normal element layout and style:
+
+```kotlin
+val name = app.textFieldState("Ada")
+// Inside an ElementScope:
+child {
+    layout { left { 0.0 }; top { 0.0 }; width { 200.0 }; height { 24.0 } }
+    textField(app, name, font)
+}
+```
+
+The platform supplies ordered `TextEdit` events through `DukeInput.textEdits`. They are delivered
+only to the focused field; `app.textEditsConsumed` reports whether the last update delivered them,
+so the host can decide whether the game should also process them. Map arrow keys to editing events
+while editing, rather than also sending the same key as a focus navigation command. Pointer press
+focuses the field and dragging selects text. Selection and caret offsets are UTF-16 indices at
+Unicode code point boundaries. The state exposes tracked `text`, `caret`, `anchor` and selection bounds. Renderers can look up a
+field with `app.textFieldOf(element)` and use `state.geometry(font, width)` for its text offset,
+caret and clipped selection bounds. Clip the text to the field's box; the offset keeps the caret
+visible and is also used for pointer placement. `onSubmit`, `onCancel` and `onFocusChanged` on
+`textField` let applications implement validation and commit policies. This implementation is
+single-line and measures prefixes for pointer placement; it does not implement grapheme clusters,
+IME composition or clipboard operations.
+
 ## What is not here yet
 
 
